@@ -1,10 +1,11 @@
 @echo off
+setlocal EnableExtensions
 "%SystemRoot%\System32\chcp.com" 65001 >nul
 set "PYTHONUTF8=1"
 set "PYTHONIOENCODING=utf-8"
 
 echo [Info] Starting generator...
-echo [Info] 입력한 생성 경로가 최종 폴더로 사용됩니다.
+echo [Info] The entered output path is used as the final folder.
 
 set "PYTHON_LAUNCHER="
 where python >nul 2>nul
@@ -22,6 +23,7 @@ echo   py -3 --version
 echo   pip install anthropic
 echo.
 pause
+endlocal
 exit /b 9009
 
 :run_launcher
@@ -37,9 +39,11 @@ echo   py -3 --version
 echo   pip install anthropic
 echo.
 pause
+endlocal
 exit /b %EXIT_CODE%
 
 :success
 echo.
 pause
+endlocal
 exit /b 0
