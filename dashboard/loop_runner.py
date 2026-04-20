@@ -151,11 +151,22 @@ class LoopRunner:
             self._log(f"❌ Claude 호출 실패: {e}")
             return f"오류: {e}", 1
 
+    def _find_test_dir(self) -> Path:
+        """tests/ 폴더가 있는 가장 적합한 디렉토리를 반환."""
+        proj = Path(self.project_dir)
+        # 서브디렉토리 중 tests/ 가진 것 우선 (예: omni-sync/)
+        for sub in sorted(proj.iterdir()):
+            if sub.is_dir() and (sub / "tests").is_dir():
+                return sub
+        return proj
+
     def _run_tests(self) -> tuple[bool, str]:
+        test_dir = self._find_test_dir()
+        self._log(f"  📂 테스트 경로: {test_dir.name}")
         try:
             result = subprocess.run(
                 ["python", "-m", "pytest", "--tb=short", "-q"],
-                cwd=self.project_dir,
+                cwd=str(test_dir),
                 capture_output=True,
                 text=True,
                 timeout=TEST_TIMEOUT_SEC,
