@@ -1,0 +1,9 @@
+__pycache__/
+*.pyc
+*.pyo
+dashboard/loop_state.json
+dashboard/server.log
+.env
+.claude/
+dauto-devtest-output/
+bizplan-autofill-codex/
