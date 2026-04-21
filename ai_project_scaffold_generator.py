@@ -578,7 +578,78 @@ def render_tasks(prd: dict, der: dict, prd_version: str) -> str:
 > Status: Generated
 > Last Updated: {date.today()}
 
-""" + "\n\n".join(sections)
+    """ + "\n\n".join(sections)
+
+
+AUTO_DEV_QUEUE_HEADING = "### Auto Dev Queue"
+
+
+def find_markdown_section_bounds(text: str, heading: str, level: int = 2) -> tuple[int, int] | None:
+    pattern = rf"^{re.escape('#' * level)} {re.escape(heading)}\s*$"
+    match = re.search(pattern, text, flags=re.MULTILINE)
+    if not match:
+        return None
+    start = match.end()
+    next_section = re.search(rf"^{re.escape('#' * level)}\s+", text[start:], flags=re.MULTILINE)
+    end = start + next_section.start() if next_section else len(text)
+    return start, end
+
+
+def get_next_task_id(tasks_text: str) -> str:
+    numbers = [int(num) for num in re.findall(r"\bTASK-(\d+)\b", tasks_text)]
+    return f"TASK-{max(numbers, default=0) + 1:02d}"
+
+
+def render_appended_task_template(task: dict, next_task_id: str) -> str:
+    depends_on = ", ".join(task.get("depends_on") or []) or "없음"
+    verification = task.get("verification", "실행 후 결과를 확인한다.")
+    original_id = task.get("id", "-")
+    title = task.get("title", "신규 태스크")
+    return "\n".join(
+        [
+            f"- [ ] [{next_task_id}] {title}",
+            f"  - 원본 태스크: {original_id}",
+            f"  - 의존성: {depends_on}",
+            f"  - 검증: {verification}",
+        ]
+    )
+
+
+def append_task_to_tasks_md(tasks_path: Path, task: dict) -> str:
+    text = tasks_path.read_text(encoding="utf-8")
+    next_task_id = get_next_task_id(text)
+    appended_task = render_appended_task_template(task, next_task_id)
+    active_bounds = find_markdown_section_bounds(text, "Active")
+
+    if active_bounds is None:
+        base = text.rstrip()
+        sections = [base] if base else []
+        sections.extend(["## Active", "", AUTO_DEV_QUEUE_HEADING, "", appended_task])
+        updated = "\n\n".join(sections).rstrip() + "\n"
+    else:
+        start, end = active_bounds
+        active_body = text[start:end].strip("\n")
+        if AUTO_DEV_QUEUE_HEADING not in active_body:
+            active_body = (
+                f"{active_body}\n\n{AUTO_DEV_QUEUE_HEADING}".strip()
+                if active_body
+                else AUTO_DEV_QUEUE_HEADING
+            )
+        active_body = f"{active_body}\n\n{appended_task}".strip() + "\n"
+        updated = text[:start] + "\n\n" + active_body + text[end:]
+
+    tasks_path.write_text(updated, encoding="utf-8")
+    print(f"  [OK] TASKS.md (append {next_task_id})")
+    return next_task_id
+
+
+def write_tasks_document(base_dir: Path, prd: dict, der: dict, prd_version: str) -> str | None:
+    tasks_path = base_dir / "TASKS.md"
+    if tasks_path.exists() and der.get("tasks"):
+        return append_task_to_tasks_md(tasks_path, der["tasks"][0])
+
+    write_file(tasks_path, render_tasks(prd, der, prd_version))
+    return None
 
 
 def render_rules(prd: dict, der: dict, tech_stack: str, prd_version: str) -> str:
@@ -1729,6 +1800,91 @@ def render_checklist_performance() -> str:
 """
 
 
+def run_self_tests() -> None:
+    import tempfile
+    import textwrap
+
+    dashboard_dir = Path(__file__).parent / "dashboard"
+    if str(dashboard_dir) not in sys.path:
+        sys.path.insert(0, str(dashboard_dir))
+
+    from loop_runner import LoopRunner
+
+    sample_task = {
+        "id": "TASK-01",
+        "title": "신규 회귀 방지 태스크",
+        "depends_on": ["TASK-00"],
+        "verification": "python -m pytest --tb=short -q",
+    }
+
+    with tempfile.TemporaryDirectory() as tmp:
+        tasks_path = Path(tmp) / "TASKS.md"
+        tasks_path.write_text(
+            textwrap.dedent(
+                """\
+                # Tasks
+
+                ## Active
+
+                ### Day 1
+
+                - [x] 기존 완료 태스크
+                - [ ] 기존 진행 중 태스크
+
+                ## Waiting On
+
+                - [ ] 대기 태스크
+                """
+            ),
+            encoding="utf-8",
+        )
+
+        appended_id = append_task_to_tasks_md(tasks_path, sample_task)
+        updated = tasks_path.read_text(encoding="utf-8")
+        assert appended_id == "TASK-01"
+        assert "- [x] 기존 완료 태스크" in updated
+        assert "- [ ] 기존 진행 중 태스크" in updated
+        assert f"- [ ] [{appended_id}] 신규 회귀 방지 태스크" in updated
+
+    with tempfile.TemporaryDirectory() as tmp:
+        tasks_path = Path(tmp) / "TASKS.md"
+        tasks_path.write_text(
+            textwrap.dedent(
+                """\
+                # Tasks
+
+                ## Active
+
+                ### Day 1
+
+                - [ ] 기존 진행 중 태스크
+
+                ### Auto Dev Queue
+
+                - [ ] [TASK-04] 이전 신규 태스크
+                """
+            ),
+            encoding="utf-8",
+        )
+
+        appended_id = append_task_to_tasks_md(tasks_path, sample_task)
+        updated = tasks_path.read_text(encoding="utf-8")
+        assert appended_id == "TASK-05"
+        assert f"- [ ] [{appended_id}] 신규 회귀 방지 태스크" in updated
+
+        runner = LoopRunner()
+        runner.project_dir = tmp
+        display_task, raw_task = runner._get_next_task_entry() or ("", "")
+        assert raw_task == "[TASK-05] 신규 회귀 방지 태스크"
+        runner._mark_task_done(raw_task)
+        final_text = tasks_path.read_text(encoding="utf-8")
+        assert "- [x] [TASK-05] 신규 회귀 방지 태스크" in final_text
+        assert "- [ ] 기존 진행 중 태스크" in final_text
+        assert "- [x] 기존 완료 태스크" not in final_text
+
+    print("self-tests passed")
+
+
 # ─── 메인 ─────────────────────────────────────────────────────────────────────
 
 def print_prd_summary(prd: dict, version: str) -> None:
@@ -1888,7 +2044,10 @@ PRD 초안이 생성되었습니다.
         der_data = fallback_derivatives(prd_data, tech_stack)
 
     if base_dir.exists():
-        overwrite = ask(f"\n[경고] {base_dir} 이미 존재합니다. 덮어쓸까요? (y/N)", "N")
+        overwrite = ask(
+            f"\n[경고] {base_dir} 이미 존재합니다. 문서를 갱신할까요? TASKS.md는 완료 이력을 유지하고 새 태스크만 append합니다. (y/N)",
+            "N",
+        )
         if overwrite.lower() != "y":
             print("취소했습니다.")
             sys.exit(0)
@@ -1899,7 +2058,7 @@ PRD 초안이 생성되었습니다.
 
     # 파생 문서 루트
     write_file(base_dir / "AGENTS.md", render_agents(prd_data, der_data, tech_stack, prd_version))
-    write_file(base_dir / "TASKS.md", render_tasks(prd_data, der_data, prd_version))
+    write_tasks_document(base_dir, prd_data, der_data, prd_version)
     write_file(base_dir / "RULES.md", render_rules(prd_data, der_data, tech_stack, prd_version))
     write_file(base_dir / "LOOP.md", render_loop(prd_data, der_data, prd_version))
     write_file(base_dir / "USER_FLOW.md", render_user_flow(prd_data, der_data, prd_version))
@@ -1992,4 +2151,7 @@ PRD.md를 수정하면 파생 문서도 재생성 또는 동기화가 필요합�
 
 
 if __name__ == "__main__":
-    main()
+    if len(sys.argv) > 1 and sys.argv[1] == "--self-test":
+        run_self_tests()
+    else:
+        main()

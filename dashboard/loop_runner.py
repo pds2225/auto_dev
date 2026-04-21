@@ -68,6 +68,13 @@ class LoopRunner:
             return f"{tags} {remainder}"
         return f"[{day_label}] {task}" if day_label else task
 
+    def _extract_generated_task_id(self, task: str) -> int | None:
+        match = re.search(r"\[TASK-(\d+)\]|\bTASK-(\d+)\b", task)
+        if not match:
+            return None
+        task_id = match.group(1) or match.group(2)
+        return int(task_id) if task_id else None
+
     def _get_next_task_entry(self) -> tuple[str, str] | None:
         tasks_path = Path(self.project_dir) / "TASKS.md"
         if not tasks_path.exists():
@@ -76,6 +83,9 @@ class LoopRunner:
             text = tasks_path.read_text(encoding="utf-8")
             active = self._get_active_section(text)
             current_day = ""
+            first_entry: tuple[str, str] | None = None
+            newest_generated_entry: tuple[str, str] | None = None
+            newest_generated_id = -1
             for line in active.splitlines():
                 day_match = re.match(r"^###\s+(.+)$", line.strip())
                 if day_match:
@@ -85,8 +95,14 @@ class LoopRunner:
                 if task_match:
                     task = task_match.group(1).strip()
                     display = self._format_task_display(current_day, task)
-                    return display, task
-            return None
+                    entry = (display, task)
+                    generated_task_id = self._extract_generated_task_id(task)
+                    if generated_task_id is not None and generated_task_id >= newest_generated_id:
+                        newest_generated_id = generated_task_id
+                        newest_generated_entry = entry
+                    if first_entry is None:
+                        first_entry = entry
+            return newest_generated_entry or first_entry
         except Exception as e:
             self._log(f"⚠ TASKS.md 읽기 실패: {e}")
             return None
@@ -131,6 +147,7 @@ class LoopRunner:
                     "--dangerously-skip-permissions",
                     "--output-format", "stream-json",
                     "--include-partial-messages",
+                    "--verbose",
                 ],
                 cwd=self.project_dir,
                 stdout=subprocess.PIPE,
