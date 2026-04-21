@@ -49,17 +49,51 @@ class LoopRunner:
         self.log_queue.put(msg)
         logger.info(msg)
 
-    def _get_next_task(self) -> str | None:
+    def _get_active_section(self, text: str) -> str:
+        match = re.search(r"^## Active\s*$", text, flags=re.MULTILINE)
+        if not match:
+            return ""
+        start = match.end()
+        next_section = re.search(r"^##\s+", text[start:], flags=re.MULTILINE)
+        end = start + next_section.start() if next_section else len(text)
+        return text[start:end]
+
+    def _format_task_display(self, day_label: str, task: str) -> str:
+        tagged_task_match = re.match(r"^((?:\[[^\]]+\])+\s*)(.+)$", task)
+        if tagged_task_match:
+            tag_block, remainder = tagged_task_match.groups()
+            tags = "".join(re.findall(r"\[[^\]]+\]", tag_block))
+            if day_label:
+                return f"[{day_label}]{tags} {remainder}"
+            return f"{tags} {remainder}"
+        return f"[{day_label}] {task}" if day_label else task
+
+    def _get_next_task_entry(self) -> tuple[str, str] | None:
         tasks_path = Path(self.project_dir) / "TASKS.md"
         if not tasks_path.exists():
             return None
         try:
             text = tasks_path.read_text(encoding="utf-8")
-            match = re.search(r"- \[ \] (.+)", text)
-            return match.group(1).strip() if match else None
+            active = self._get_active_section(text)
+            current_day = ""
+            for line in active.splitlines():
+                day_match = re.match(r"^###\s+(.+)$", line.strip())
+                if day_match:
+                    current_day = day_match.group(1).strip()
+                    continue
+                task_match = re.match(r"^- \[ \] (.+)$", line.strip())
+                if task_match:
+                    task = task_match.group(1).strip()
+                    display = self._format_task_display(current_day, task)
+                    return display, task
+            return None
         except Exception as e:
             self._log(f"⚠ TASKS.md 읽기 실패: {e}")
             return None
+
+    def _get_next_task(self) -> str | None:
+        entry = self._get_next_task_entry()
+        return entry[0] if entry else None
 
     def _mark_task_done(self, task: str):
         tasks_path = Path(self.project_dir) / "TASKS.md"
@@ -67,7 +101,11 @@ class LoopRunner:
             return
         try:
             text = tasks_path.read_text(encoding="utf-8")
-            updated = text.replace(f"- [ ] {task}", f"- [x] {task}", 1)
+            active = self._get_active_section(text)
+            if not active:
+                return
+            updated_active = active.replace(f"- [ ] {task}", f"- [x] {task}", 1)
+            updated = text.replace(active, updated_active, 1)
             tasks_path.write_text(updated, encoding="utf-8")
         except Exception as e:
             self._log(f"⚠ TASKS.md 업데이트 실패: {e}")
@@ -203,28 +241,37 @@ class LoopRunner:
     def _run(self):
         try:
             self._log("▶ 루프 시작")
+            task_entry = self._get_next_task_entry()
+            if not task_entry:
+                self.current_task = ""
+                self.current_stage = "done"
+                self._log("✅ 미완료 태스크가 없습니다. 루프 종료.")
+                return
+
             self._install_deps()
 
             while not self._stop_event.is_set():
-                task = self._get_next_task()
-                if not task:
+                task_entry = self._get_next_task_entry()
+                if not task_entry:
+                    self.current_task = ""
                     self.current_stage = "done"
                     self._log("✅ 모든 태스크 완료. 루프 종료.")
                     break
+                display_task, task = task_entry
 
-                self.current_task = task
-                self._log(f"\n📌 태스크: {task}")
+                self.current_task = display_task
+                self._log(f"\n📌 태스크: {display_task}")
 
                 # ── 1단계: Claude Code 하드닝 ──────────────────────────────
                 self.current_stage = "hardening"
                 self._log("🔨 [1/3] Claude Code 하드닝 실행 중...")
                 harden_prompt = self._read_prompt(HARDEN_PROMPT_FILE)
-                context = f"현재 태스크: {task}\n프로젝트 경로: {self.project_dir}"
+                context = f"현재 태스크: {display_task}\n프로젝트 경로: {self.project_dir}"
                 harden_output, harden_code = self._run_claude(harden_prompt, context)
                 if harden_code != 0:
                     self._log("↻ [1/3] 하드닝 재시도")
                     retry_prompt = harden_prompt or "하드닝 실행"
-                    retry_context = f"현재 태스크: {task}"
+                    retry_context = f"현재 태스크: {display_task}"
                     harden_output, harden_code = self._run_claude(retry_prompt, retry_context)
                     if harden_code != 0:
                         self._log("⚠ 하드닝 실패. 다음 단계로 진행")
@@ -251,7 +298,7 @@ class LoopRunner:
                 self.current_stage = "debug"
                 self._log("🐛 [3/3] 테스트 실패. 디버그 실행 중...")
                 debug_prompt = self._read_prompt(DEBUG_PROMPT_FILE)
-                debug_context = f"현재 태스크: {task}\n에러 로그:\n{test_output}"
+                debug_context = f"현재 태스크: {display_task}\n에러 로그:\n{test_output}"
                 self._run_claude(debug_prompt, debug_context)
                 if self._stop_event.is_set():
                     break
