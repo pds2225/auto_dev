@@ -188,7 +188,9 @@
         btn.textContent = data.running ? 'ON' : 'OFF';
         setStage(data.current_stage);
         taskText.textContent = data.current_task || '—';
-        if (data.project_dir && !dirInput.value) dirInput.value = data.project_dir;
+        if (data.project_dir && document.activeElement !== dirInput) {
+          dirInput.value = data.project_dir;
+        }
       } catch {}
     }
 
