@@ -21,6 +21,10 @@ def _save_state():
                     "project_dir": runner.project_dir,
                     "current_stage": runner.current_stage,
                     "current_task": runner.current_task,
+                    "current_task_id": runner.current_task_id,
+                    "current_task_type": runner.current_task_type,
+                    "selection_reason": runner.selection_reason,
+                    "selected_from_section": runner.selected_from_section,
                     "last_updated": datetime.now().isoformat(),
                 },
                 ensure_ascii=False,
@@ -40,6 +44,11 @@ def _load_state():
             was_running = data.get("running", False)
             if project_dir and Path(project_dir).exists():
                 runner.project_dir = project_dir
+                runner.current_task = data.get("current_task", "")
+                runner.current_task_id = data.get("current_task_id", "")
+                runner.current_task_type = data.get("current_task_type", "")
+                runner.selection_reason = data.get("selection_reason", "")
+                runner.selected_from_section = data.get("selected_from_section", "")
                 if was_running:
                     print(f"[*] 서버 재시작 감지: 루프 자동 복구 중... ({project_dir})")
                     runner.start(project_dir)
@@ -92,6 +101,10 @@ def state():
             "running": runner.running,
             "current_stage": runner.current_stage,
             "current_task": runner.current_task,
+            "current_task_id": runner.current_task_id,
+            "current_task_type": runner.current_task_type,
+            "selection_reason": runner.selection_reason,
+            "selected_from_section": runner.selected_from_section,
             "project_dir": runner.project_dir,
         }
     )

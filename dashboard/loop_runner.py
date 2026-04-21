@@ -1,6 +1,7 @@
 import logging
 import re
 import subprocess
+import sys
 import threading
 from pathlib import Path
 from queue import Queue
@@ -26,6 +27,10 @@ class LoopRunner:
         self.running = False
         self.current_stage = "idle"
         self.current_task = ""
+        self.current_task_id = ""
+        self.current_task_type = ""
+        self.selection_reason = ""
+        self.selected_from_section = ""
         self.log_queue: Queue = Queue()
         self._thread: threading.Thread | None = None
         self._stop_event = threading.Event()
@@ -68,6 +73,13 @@ class LoopRunner:
             return f"{tags} {remainder}"
         return f"[{day_label}] {task}" if day_label else task
 
+    def _clear_current_selection(self):
+        self.current_task = ""
+        self.current_task_id = ""
+        self.current_task_type = ""
+        self.selection_reason = ""
+        self.selected_from_section = ""
+
     def _extract_generated_task_id(self, task: str) -> int | None:
         match = re.search(r"\[TASK-(\d+)\]|\bTASK-(\d+)\b", task)
         if not match:
@@ -75,16 +87,32 @@ class LoopRunner:
         task_id = match.group(1) or match.group(2)
         return int(task_id) if task_id else None
 
-    def _get_next_task_entry(self) -> tuple[str, str] | None:
+    def _build_task_selection(self, day_label: str, task: str, task_type: str, reason: str) -> dict[str, str]:
+        task_id_num = self._extract_generated_task_id(task)
+        task_id = f"TASK-{task_id_num:02d}" if task_id_num is not None else ""
+        return {
+            "selected_task_text": self._format_task_display(day_label, task),
+            "selected_task_raw": task,
+            "selected_task_id": task_id,
+            "selected_task_type": task_type,
+            "selection_reason": reason,
+            "selected_from_section": "Active",
+        }
+
+    def _get_next_task_selection(self) -> dict[str, str] | None:
         tasks_path = Path(self.project_dir) / "TASKS.md"
         if not tasks_path.exists():
+            self._log("⚠ TASKS.md 파일이 없습니다.")
             return None
         try:
             text = tasks_path.read_text(encoding="utf-8")
             active = self._get_active_section(text)
+            if not active.strip():
+                self._log("⚠ Active 섹션이 없습니다.")
+                return None
             current_day = ""
-            first_entry: tuple[str, str] | None = None
-            newest_generated_entry: tuple[str, str] | None = None
+            first_entry: dict[str, str] | None = None
+            newest_generated_entry: dict[str, str] | None = None
             newest_generated_id = -1
             for line in active.splitlines():
                 day_match = re.match(r"^###\s+(.+)$", line.strip())
@@ -94,18 +122,34 @@ class LoopRunner:
                 task_match = re.match(r"^- \[ \] (.+)$", line.strip())
                 if task_match:
                     task = task_match.group(1).strip()
-                    display = self._format_task_display(current_day, task)
-                    entry = (display, task)
                     generated_task_id = self._extract_generated_task_id(task)
+                    if generated_task_id is None and "[TASK-" in task:
+                        self._log(f"⚠ TASK ID 추출 실패: {task}")
                     if generated_task_id is not None and generated_task_id >= newest_generated_id:
                         newest_generated_id = generated_task_id
-                        newest_generated_entry = entry
+                        newest_generated_entry = self._build_task_selection(
+                            current_day,
+                            task,
+                            "generated",
+                            "newest_generated_pending",
+                        )
                     if first_entry is None:
-                        first_entry = entry
+                        first_entry = self._build_task_selection(
+                            current_day,
+                            task,
+                            "regular_pending",
+                            "fallback_selected",
+                        )
             return newest_generated_entry or first_entry
         except Exception as e:
             self._log(f"⚠ TASKS.md 읽기 실패: {e}")
             return None
+
+    def _get_next_task_entry(self) -> tuple[str, str] | None:
+        selection = self._get_next_task_selection()
+        if not selection:
+            return None
+        return selection["selected_task_text"], selection["selected_task_raw"]
 
     def _get_next_task(self) -> str | None:
         entry = self._get_next_task_entry()
@@ -258,9 +302,9 @@ class LoopRunner:
     def _run(self):
         try:
             self._log("▶ 루프 시작")
-            task_entry = self._get_next_task_entry()
-            if not task_entry:
-                self.current_task = ""
+            selection = self._get_next_task_selection()
+            if not selection:
+                self._clear_current_selection()
                 self.current_stage = "done"
                 self._log("✅ 미완료 태스크가 없습니다. 루프 종료.")
                 return
@@ -268,15 +312,27 @@ class LoopRunner:
             self._install_deps()
 
             while not self._stop_event.is_set():
-                task_entry = self._get_next_task_entry()
-                if not task_entry:
-                    self.current_task = ""
+                selection = self._get_next_task_selection()
+                if not selection:
+                    self._clear_current_selection()
                     self.current_stage = "done"
                     self._log("✅ 모든 태스크 완료. 루프 종료.")
                     break
-                display_task, task = task_entry
+                display_task = selection["selected_task_text"]
+                task = selection["selected_task_raw"]
 
                 self.current_task = display_task
+                self.current_task_id = selection["selected_task_id"]
+                self.current_task_type = selection["selected_task_type"]
+                self.selection_reason = selection["selection_reason"]
+                self.selected_from_section = selection["selected_from_section"]
+                log_task_id = self.current_task_id or "-"
+                self._log(
+                    f"[TASK_SELECT] id={log_task_id} "
+                    f"type={self.current_task_type} "
+                    f"reason={self.selection_reason} "
+                    f"section={self.selected_from_section}"
+                )
                 self._log(f"\n📌 태스크: {display_task}")
 
                 # ── 1단계: Claude Code 하드닝 ──────────────────────────────
@@ -346,3 +402,81 @@ class LoopRunner:
 
 
 runner = LoopRunner()
+
+
+def run_self_tests():
+    import tempfile
+    import textwrap
+
+    with tempfile.TemporaryDirectory() as tmp:
+        tasks_path = Path(tmp) / "TASKS.md"
+        tasks_path.write_text(
+            textwrap.dedent(
+                """\
+                # Tasks
+
+                ## Active
+
+                ### Day 2 - Rule Engine
+                - [ ] regular pending task
+                - [ ] [TASK-30] earlier generated task
+                - [ ] [TASK-31] newest generated task
+                """
+            ),
+            encoding="utf-8",
+        )
+        runner = LoopRunner()
+        runner.project_dir = tmp
+        selection = runner._get_next_task_selection()
+        assert selection is not None
+        assert selection["selected_task_id"] == "TASK-31"
+        assert selection["selected_task_type"] == "generated"
+        assert selection["selection_reason"] == "newest_generated_pending"
+
+    with tempfile.TemporaryDirectory() as tmp:
+        tasks_path = Path(tmp) / "TASKS.md"
+        tasks_path.write_text(
+            textwrap.dedent(
+                """\
+                # Tasks
+
+                ## Active
+
+                ### Day 1
+                - [ ] regular pending task
+
+                ## Waiting On
+                - [ ] ignored generated task
+                """
+            ),
+            encoding="utf-8",
+        )
+        runner = LoopRunner()
+        runner.project_dir = tmp
+        selection = runner._get_next_task_selection()
+        assert selection is not None
+        assert selection["selected_task_id"] == ""
+        assert selection["selected_task_type"] == "regular_pending"
+        assert selection["selection_reason"] == "fallback_selected"
+
+    with tempfile.TemporaryDirectory() as tmp:
+        runner = LoopRunner()
+        runner.project_dir = tmp
+        selection = runner._get_next_task_selection()
+        assert selection is None
+
+        tasks_path = Path(tmp) / "TASKS.md"
+        tasks_path.write_text("# Tasks\n\n## Waiting On\n\n- [ ] ignored task\n", encoding="utf-8")
+        selection = runner._get_next_task_selection()
+        assert selection is None
+
+        tasks_path.write_text("# Tasks\n\n## Active\n\n### Day 1\n\n- [x] done task\n", encoding="utf-8")
+        selection = runner._get_next_task_selection()
+        assert selection is None
+
+    print("self-tests passed")
+
+
+if __name__ == "__main__":
+    if len(sys.argv) > 1 and sys.argv[1] == "--self-test":
+        run_self_tests()

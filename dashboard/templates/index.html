@@ -90,6 +90,8 @@
     /* 태스크 */
     .task-label { font-size: 0.75rem; color: #8b949e; margin-bottom: 4px; }
     .task-text { font-size: 0.95rem; color: #e6edf3; min-height: 1.4em; }
+    .task-meta { margin-top: 10px; font-size: 0.78rem; color: #8b949e; line-height: 1.5; }
+    .task-note { margin-top: 12px; font-size: 0.75rem; color: #7d8590; }
 
     /* 로그 */
     #logBox {
@@ -137,6 +139,8 @@
     <hr />
     <div class="task-label">현재 태스크</div>
     <div id="taskText" class="task-text">—</div>
+    <div id="taskMeta" class="task-meta">ID: — | Type: — | Reason: —</div>
+    <div class="task-note">선택 기준: generated TASK-xx 우선, 없으면 Active의 첫 일반 미완료를 fallback 선택.</div>
   </div>
 
   <!-- 로그 -->
@@ -149,6 +153,7 @@
     const btn = document.getElementById('toggleBtn');
     const badge = document.getElementById('stageBadge');
     const taskText = document.getElementById('taskText');
+    const taskMeta = document.getElementById('taskMeta');
     const logBox = document.getElementById('logBox');
     const dirInput = document.getElementById('projectDir');
 
@@ -179,6 +184,13 @@
       logBox.scrollTop = logBox.scrollHeight;
     }
 
+    function setTaskMeta(data) {
+      const taskId = data.current_task_id || '—';
+      const taskType = data.current_task_type || '—';
+      const reason = data.selection_reason || '—';
+      taskMeta.textContent = `ID: ${taskId} | Type: ${taskType} | Reason: ${reason}`;
+    }
+
     // 상태 폴링
     async function pollState() {
       try {
@@ -188,6 +200,7 @@
         btn.textContent = data.running ? 'ON' : 'OFF';
         setStage(data.current_stage);
         taskText.textContent = data.current_task || '—';
+        setTaskMeta(data);
         if (data.project_dir && document.activeElement !== dirInput) {
           dirInput.value = data.project_dir;
         }
