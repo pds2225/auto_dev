@@ -237,7 +237,7 @@ def _call_openai(prompt: str, api_key: str) -> dict | None:
     try:
         client = openai.OpenAI(api_key=api_key)
         resp = client.chat.completions.create(
-            model="gpt-4o",
+            model="gpt-5.4",
             max_tokens=8192,
             messages=[
                 {"role": "system", "content": SYSTEM_PROMPT},
@@ -258,6 +258,46 @@ def call_api(prompt: str, provider: str, api_key: str) -> dict | None:
     if result is None:
         print("템플릿 모드로 전환합니다.")
     return result
+
+
+def generate_tasks_via_claude_cli(base_dir: Path, prd_version: str) -> bool:
+    """Claude CLI로 PRD.md를 읽어 TASKS.md를 직접 생성. 성공하면 True."""
+    import subprocess
+    prd_path = base_dir / "PRD.md"
+    if not prd_path.exists():
+        return False
+
+    prompt = (
+        f"PRD.md를 읽고, 아래 조건을 지켜서 TASKS.md를 생성해라.\n\n"
+        f"[TASKS.md 형식 규칙]\n"
+        f"- 헤더: # TASKS.md — <서비스명> / Based on: PRD {prd_version}\n"
+        f"- 태스크 5~7개, 각 TASK에 수락 기준 3개 이상\n"
+        f"- 예외처리·빈상태·로딩상태 반드시 반영\n"
+        f"- 파일 끝에 반드시 아래 Active 섹션 포함:\n"
+        f"  ## Active\n\n  ### Auto Dev Queue\n\n  - [ ] [TASK-01] <제목>\n  - [ ] [TASK-02] <제목>\n  ...\n"
+        f"- loop_runner.py가 인식하는 형식: '- [ ] [TASK-XX] 제목' (대소문자 구분 없음)"
+    )
+
+    try:
+        result = subprocess.run(
+            ["claude", "-p", prompt, "--dangerously-skip-permissions"],
+            cwd=str(base_dir),
+            capture_output=True,
+            text=True,
+            timeout=180,
+            encoding="utf-8",
+            errors="replace",
+        )
+        return (base_dir / "TASKS.md").exists()
+    except FileNotFoundError:
+        print("[경고] claude CLI를 찾을 수 없습니다. 템플릿으로 대체합니다.")
+        return False
+    except subprocess.TimeoutExpired:
+        print("[경고] claude CLI 시간 초과. 템플릿으로 대체합니다.")
+        return False
+    except Exception as e:
+        print(f"[경고] claude CLI 실패: {e}")
+        return False
 
 
 # ─── 폴백 데이터 ─────────────────────────────────────────────────────────────
@@ -550,6 +590,16 @@ PM + 서비스기획자 + 시니어 개발리드 + QA를 동시에 수행한다.
 """
 
 
+AUTO_DEV_QUEUE_HEADING = "### Auto Dev Queue"
+
+
+def render_active_task_queue(tasks: list[dict]) -> str:
+    lines = ["## Active", "", AUTO_DEV_QUEUE_HEADING, ""]
+    for task in tasks:
+        lines.append(f"- [ ] [{task['id']}] {task['title']}")
+    return "\n".join(lines)
+
+
 def render_tasks(prd: dict, der: dict, prd_version: str) -> str:
     sections = []
     for task in der["tasks"]:
@@ -572,16 +622,18 @@ def render_tasks(prd: dict, der: dict, prd_version: str) -> str:
 {task['verification']}
 
 ---""")
-    return f"""# TASKS.md — {prd['service_name']}
+
+    active_queue = render_active_task_queue(der["tasks"])
+    body_sections = [
+        f"""# TASKS.md — {prd['service_name']}
 
 > Based on: PRD {prd_version}
 > Status: Generated
-> Last Updated: {date.today()}
-
-    """ + "\n\n".join(sections)
-
-
-AUTO_DEV_QUEUE_HEADING = "### Auto Dev Queue"
+> Last Updated: {date.today()}""",
+        "\n\n".join(sections),
+        active_queue,
+    ]
+    return "\n\n".join(section.strip() for section in body_sections if section.strip())
 
 
 def find_markdown_section_bounds(text: str, heading: str, level: int = 2) -> tuple[int, int] | None:
@@ -1935,9 +1987,9 @@ def main() -> None:
 
     print("\nPRD 생성에 사용할 AI:")
     print("  1. Claude (Anthropic)")
-    print("  2. GPT (OpenAI)")
+    print("  2. GPT (OpenAI) [기본]")
     print("  3. 템플릿 모드 (API 없이)")
-    ai_choice = ask("번호 선택", "1")
+    ai_choice = ask("번호 선택", "2")
 
     if ai_choice == "2":
         api_key = os.environ.get("OPENAI_API_KEY", "") or ask("OPENAI_API_KEY", "")
@@ -2058,7 +2110,13 @@ PRD 초안이 생성되었습니다.
 
     # 파생 문서 루트
     write_file(base_dir / "AGENTS.md", render_agents(prd_data, der_data, tech_stack, prd_version))
-    write_tasks_document(base_dir, prd_data, der_data, prd_version)
+
+    # TASKS.md: Claude CLI로 PRD.md를 읽어 직접 생성, 실패 시 템플릿 폴백
+    print("  [TASKS] Claude CLI로 TASKS.md 생성 중...")
+    tasks_ok = generate_tasks_via_claude_cli(base_dir, prd_version)
+    if not tasks_ok:
+        print("  [TASKS] 폴백: 파생 JSON 기반 TASKS.md 생성")
+        write_tasks_document(base_dir, prd_data, der_data, prd_version)
     write_file(base_dir / "RULES.md", render_rules(prd_data, der_data, tech_stack, prd_version))
     write_file(base_dir / "LOOP.md", render_loop(prd_data, der_data, prd_version))
     write_file(base_dir / "USER_FLOW.md", render_user_flow(prd_data, der_data, prd_version))
@@ -2145,9 +2203,32 @@ PRD.md를 수정하면 파생 문서도 재생성 또는 동기화가 필요합�
     print(f"  경로: {base_dir}")
     print(f"  PRD 버전: {prd_version} (Approved)")
     print(f"{'=' * 60}")
+
+    # auto_dev 루프 큐에 자동 등록
+    queue_file = Path(__file__).parent / "dashboard" / "queue.json"
+    try:
+        import json as _json
+        queue = []
+        if queue_file.exists():
+            try:
+                queue = _json.loads(queue_file.read_text(encoding="utf-8"))
+                if not isinstance(queue, list):
+                    queue = []
+            except Exception:
+                queue = []
+        project_str = str(base_dir)
+        if project_str not in queue:
+            queue.append(project_str)
+            queue_file.write_text(_json.dumps(queue, ensure_ascii=False, indent=2), encoding="utf-8")
+            print(f"\n  ✅ 루프 큐에 자동 등록됨: {project_str}")
+        else:
+            print(f"\n  ℹ 이미 큐에 등록돼 있습니다: {project_str}")
+    except Exception as e:
+        print(f"\n  ⚠ 큐 등록 실패: {e}")
+
     print("\n다음 단계:")
     print("  1. PROMPT_CODEX.md → Codex에 붙여넣기 (1차 구현)")
-    print("  2. PROMPT_CLAUDE_REVIEW.md → Claude Code에 붙여넣기 (고도화)")
+    print("  2. 대시보드 ON → 루프 자동 실행")
 
 
 if __name__ == "__main__":

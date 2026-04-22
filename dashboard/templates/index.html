@@ -130,6 +130,16 @@
     </div>
   </div>
 
+  <!-- 프로젝트 큐 -->
+  <div class="card">
+    <div class="section-title">프로젝트 큐 <span id="queueCount" style="color:#58a6ff"></span></div>
+    <div class="path-row" style="margin-bottom:10px">
+      <input id="queueInput" type="text" placeholder="큐에 추가할 프로젝트 경로" />
+      <button onclick="queueAdd()" style="padding:8px 16px;background:#1a7f37;color:#fff;border:none;border-radius:8px;cursor:pointer;font-size:0.85rem">추가</button>
+    </div>
+    <div id="queueList" style="font-size:0.82rem;color:#8b949e;line-height:1.8"></div>
+  </div>
+
   <!-- 메인 토글 -->
   <div class="card">
     <div class="toggle-wrap">
@@ -141,6 +151,12 @@
     <div id="taskText" class="task-text">—</div>
     <div id="taskMeta" class="task-meta">ID: — | Type: — | Reason: —</div>
     <div class="task-note">선택 기준: generated TASK-xx 우선, 없으면 Active의 첫 일반 미완료를 fallback 선택.</div>
+  </div>
+
+  <!-- 태스크 목록 -->
+  <div class="card">
+    <div class="section-title">태스크 진행률 <span id="taskProgress" style="color:#58a6ff"></span></div>
+    <div id="taskList" style="font-size:0.82rem;line-height:1.8;max-height:200px;overflow-y:auto"></div>
   </div>
 
   <!-- 로그 -->
@@ -156,6 +172,8 @@
     const taskMeta = document.getElementById('taskMeta');
     const logBox = document.getElementById('logBox');
     const dirInput = document.getElementById('projectDir');
+    const PROJECT_DIR_DRAFT_KEY = 'auto-dev-project-dir-draft';
+    let projectDirDirty = false;
 
     const STAGE_LABELS = {
       idle:      { label: '대기 중',      cls: 'idle',      pulse: false },
@@ -191,6 +209,31 @@
       taskMeta.textContent = `ID: ${taskId} | Type: ${taskType} | Reason: ${reason}`;
     }
 
+    function saveProjectDirDraft(value) {
+      try {
+        localStorage.setItem(PROJECT_DIR_DRAFT_KEY, value);
+      } catch {}
+    }
+
+    function loadProjectDirDraft() {
+      try {
+        return localStorage.getItem(PROJECT_DIR_DRAFT_KEY) || '';
+      } catch {
+        return '';
+      }
+    }
+
+    const initialProjectDirDraft = loadProjectDirDraft();
+    if (initialProjectDirDraft) {
+      dirInput.value = initialProjectDirDraft;
+      projectDirDirty = true;
+    }
+
+    dirInput.addEventListener('input', () => {
+      projectDirDirty = true;
+      saveProjectDirDraft(dirInput.value.trim());
+    });
+
     // 상태 폴링
     async function pollState() {
       try {
@@ -201,8 +244,9 @@
         setStage(data.current_stage);
         taskText.textContent = data.current_task || '—';
         setTaskMeta(data);
-        if (data.project_dir && document.activeElement !== dirInput) {
+        if (data.project_dir && !projectDirDirty && document.activeElement !== dirInput) {
           dirInput.value = data.project_dir;
+          saveProjectDirDraft(data.project_dir);
         }
       } catch {}
     }
@@ -222,13 +266,61 @@
         });
         const data = await res.json();
         if (data.error) { appendLog('❌ ' + data.error); return; }
+        projectDirDirty = false;
+        saveProjectDirDraft(dirInput.value.trim());
         appendLog(data.running ? '▶ 루프 시작됨' : '⏹ 루프 중단됨');
         pollState();
       } catch (e) { appendLog('❌ 서버 연결 오류'); }
     });
 
+    async function pollTasks() {
+      try {
+        const res = await fetch('/api/tasks');
+        const data = await res.json();
+        if (data.total === 0) { taskList.innerHTML = '<span style="color:#8b949e">TASKS.md 없음</span>'; return; }
+        taskProgress.textContent = `${data.done.length} / ${data.total} 완료`;
+        const currentTask = document.getElementById('taskText').textContent;
+        taskList.innerHTML = [
+          ...data.done.map(t => `<div style="color:#3fb950;text-decoration:line-through">✓ ${t}</div>`),
+          ...data.pending.map(t => {
+            const isActive = currentTask && t.includes(currentTask.replace(/^\[.*?\]\s*/, '').trim().slice(0, 20));
+            return `<div style="color:${isActive ? '#f0b429' : '#e6edf3'}${isActive ? ';font-weight:700' : ''}">· ${t}</div>`;
+          })
+        ].join('');
+      } catch {}
+    }
+
+    async function pollQueue() {
+      try {
+        const res = await fetch('/api/queue');
+        const data = await res.json();
+        const q = data.queue || [];
+        queueCount.textContent = q.length ? `(${q.length}개 대기)` : '';
+        queueList.innerHTML = q.length
+          ? q.map((p, i) => `<div>${i + 1}. ${p} <span onclick="queueRemove('${p}')" style="cursor:pointer;color:#ff7b72;margin-left:8px">✕</span></div>`).join('')
+          : '<span>대기 중인 프로젝트 없음</span>';
+      } catch {}
+    }
+
+    async function queueAdd() {
+      const val = document.getElementById('queueInput').value.trim();
+      if (!val) return;
+      await fetch('/api/queue', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ project_dir: val }) });
+      document.getElementById('queueInput').value = '';
+      pollQueue();
+    }
+
+    async function queueRemove(dir) {
+      await fetch('/api/queue', { method: 'DELETE', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ project_dir: dir }) });
+      pollQueue();
+    }
+
     setInterval(pollState, 1500);
+    setInterval(pollTasks, 3000);
+    setInterval(pollQueue, 3000);
     pollState();
+    pollTasks();
+    pollQueue();
   </script>
 </body>
 </html>

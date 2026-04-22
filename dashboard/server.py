@@ -1,11 +1,12 @@
 import json
+import re
 import time
 from datetime import datetime
 from pathlib import Path
 
 from flask import Flask, Response, jsonify, render_template, request
 
-from loop_runner import runner
+from loop_runner import QUEUE_FILE, runner
 
 app = Flask(__name__)
 
@@ -110,15 +111,85 @@ def state():
     )
 
 
+def _read_queue() -> list:
+    try:
+        if QUEUE_FILE.exists():
+            q = json.loads(QUEUE_FILE.read_text(encoding="utf-8"))
+            return q if isinstance(q, list) else []
+    except Exception:
+        pass
+    return []
+
+
+def _write_queue(queue: list):
+    QUEUE_FILE.write_text(json.dumps(queue, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+@app.route("/api/queue", methods=["GET"])
+def queue_list():
+    return jsonify({"queue": _read_queue()})
+
+
+@app.route("/api/queue", methods=["POST"])
+def queue_add():
+    body = request.get_json(silent=True) or {}
+    project_dir = str(body.get("project_dir", "")).strip()
+    if not project_dir or not Path(project_dir).is_dir():
+        return jsonify({"error": f"유효하지 않은 경로: {project_dir}"}), 400
+    queue = _read_queue()
+    if project_dir not in queue:
+        queue.append(project_dir)
+        _write_queue(queue)
+    return jsonify({"queue": queue})
+
+
+@app.route("/api/queue", methods=["DELETE"])
+def queue_remove():
+    body = request.get_json(silent=True) or {}
+    project_dir = str(body.get("project_dir", "")).strip()
+    queue = [p for p in _read_queue() if p != project_dir]
+    _write_queue(queue)
+    return jsonify({"queue": queue})
+
+
+@app.route("/api/tasks")
+def tasks():
+    done, pending = [], []
+    if runner.project_dir:
+        tasks_path = Path(runner.project_dir) / "TASKS.md"
+        if tasks_path.exists():
+            try:
+                text = tasks_path.read_text(encoding="utf-8")
+                active_section = runner._get_active_section(text)
+                for line in active_section.splitlines():
+                    m = re.match(r"^- \[x\] (.+)$", line.strip())
+                    if m:
+                        done.append(m.group(1).strip())
+                        continue
+                    m = re.match(r"^- \[ \] ~~.+~~.*$", line.strip())
+                    if m:
+                        continue  # 취소선 항목은 집계 제외
+                    m = re.match(r"^- \[ \] (.+)$", line.strip())
+                    if m:
+                        pending.append(m.group(1).strip())
+            except Exception:
+                pass
+    return jsonify({"done": done, "pending": pending, "total": len(done) + len(pending)})
+
+
 @app.route("/api/loop/stream")
 def stream():
     def event_generator():
+        last_heartbeat = time.time()
         while True:
             if not runner.log_queue.empty():
                 msg = runner.log_queue.get()
                 yield f"data: {msg}\n\n"
             else:
-                yield f"data: \n\n"
+                now = time.time()
+                if now - last_heartbeat >= 30:
+                    yield ": heartbeat\n\n"
+                    last_heartbeat = now
             time.sleep(0.3)
 
     return Response(event_generator(), mimetype="text/event-stream",
@@ -127,4 +198,4 @@ def stream():
 
 if __name__ == "__main__":
     print("대시보드 시작: http://localhost:5000")
-    app.run(debug=False, threaded=True, port=5000)
+    app.run(host="0.0.0.0", debug=False, threaded=True, port=5000)
