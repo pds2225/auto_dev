@@ -1,0 +1,18 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(pip install *)",
+      "mcp__windows-mcp__Snapshot",
+      "mcp__windows-mcp__Wait",
+      "mcp__Windows-MCP__Wait",
+      "mcp__Windows-MCP__PowerShell",
+      "mcp__Windows-MCP__Process",
+      "Bash(cmd /c \"cd D:\\\\auto_dev\\\\dashboard && start /B python server.py > server_out.txt 2>&1\")",
+      "Bash(curl -s http://localhost:5000/api/loop/state)",
+      "Bash(curl -s -X POST http://localhost:5000/api/loop/toggle -H \"Content-Type: application/json\" -d \"{}\")",
+      "Bash(timeout 15 claude -p \"파일 목록 알려줘\" --dangerously-skip-permissions)",
+      "Bash(echo \"exit: $?\")",
+      "Bash(python3 -c \"import sys,json; [print\\(b['name']\\) for b in json.load\\(sys.stdin\\)]\")"
+    ]
+  }
+}

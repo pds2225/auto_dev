@@ -1,11 +1,5 @@
 __pycache__/
 *.pyc
 *.pyo
-dashboard/loop_state.json
-dashboard/server.log
+.pytest_cache/
 .env
-.claude/
-dauto-devtest-output/
-bizplan-autofill-codex/
-auto_dev_repo/
-dashboard/runner.log
