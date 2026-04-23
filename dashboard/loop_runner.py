@@ -1,9 +1,14 @@
 import logging
 import os
 import re
+import shlex
 import subprocess
 import sys
+import tempfile
 import threading
+import time
+import ast
+from datetime import datetime
 from pathlib import Path
 from queue import Queue
 
@@ -15,7 +20,12 @@ DEBUG_PROMPT_FILE = AUTO_DEV_DIR / "Codex Debug Prompt (Claude Handoff Optimized
 LOG_FILE = Path(__file__).parent / "runner.log"
 QUEUE_FILE = Path(__file__).parent / "queue.json"
 DEFAULT_CLAUDE_TIMEOUT_SEC = 180
+DEFAULT_CODEX_RETRY_COUNT = 2
 TEST_TIMEOUT_SEC = 120
+BUILD_TAG = os.getenv(
+    "AUTO_DEV_BUILD_TAG",
+    datetime.fromtimestamp(Path(__file__).stat().st_mtime).strftime("%Y%m%d-%H%M%S"),
+)
 
 logger = logging.getLogger("auto_dev.loop_runner")
 if not logger.handlers:
@@ -25,8 +35,8 @@ if not logger.handlers:
     logger.addHandler(file_handler)
 
 
-def get_claude_timeout_sec() -> int:
-    raw = os.getenv("CLAUDE_TIMEOUT", "").strip()
+def get_codex_timeout_sec() -> int:
+    raw = os.getenv("CODEX_TIMEOUT", os.getenv("CLAUDE_TIMEOUT", "")).strip()
     if not raw:
         return DEFAULT_CLAUDE_TIMEOUT_SEC
     try:
@@ -35,11 +45,33 @@ def get_claude_timeout_sec() -> int:
             return timeout
     except ValueError:
         pass
-    logger.warning("Invalid CLAUDE_TIMEOUT=%r, falling back to default %s", raw, DEFAULT_CLAUDE_TIMEOUT_SEC)
+    logger.warning("Invalid CODEX_TIMEOUT=%r, falling back to default %s", raw, DEFAULT_CLAUDE_TIMEOUT_SEC)
     return DEFAULT_CLAUDE_TIMEOUT_SEC
 
 
+def get_claude_timeout_sec() -> int:
+    return get_codex_timeout_sec()
+
+
+def get_codex_retry_count() -> int:
+    raw = os.getenv("CODEX_RETRY_COUNT", "").strip()
+    if not raw:
+        return DEFAULT_CODEX_RETRY_COUNT
+    try:
+        retry_count = int(raw)
+        if retry_count > 0:
+            return retry_count
+    except ValueError:
+        pass
+    logger.warning("Invalid CODEX_RETRY_COUNT=%r, falling back to default %s", raw, DEFAULT_CODEX_RETRY_COUNT)
+    return DEFAULT_CODEX_RETRY_COUNT
+
+
 class LoopRunner:
+    _runner_lock = threading.Lock()
+    _active_runner: "LoopRunner | None" = None
+    _active_project_dir: str = ""
+
     def __init__(self):
         self.project_dir: str = ""
         self.running = False
@@ -54,12 +86,44 @@ class LoopRunner:
         self._stop_event = threading.Event()
 
     def start(self, project_dir: str):
-        if self.running:
-            return
-        self.project_dir = project_dir
-        self.running = True
-        self._stop_event.clear()
-        self._thread = threading.Thread(target=self._run, daemon=True)
+        normalized_project_dir = str(Path(project_dir))
+        previous_runner: LoopRunner | None = None
+        restart_self = False
+
+        with self.__class__._runner_lock:
+            active_runner = self.__class__._active_runner
+            active_project_dir = self.__class__._active_project_dir
+
+            if (
+                active_runner is self
+                and self.running
+                and self._thread is not None
+                and self._thread.is_alive()
+                and active_project_dir == normalized_project_dir
+            ):
+                self._log(f"⏭ 이미 실행 중 — start 무시 | project={normalized_project_dir}")
+                return
+
+            if active_runner is not None and active_runner._thread is not None and active_runner._thread.is_alive():
+                if active_runner is self:
+                    restart_self = True
+                else:
+                    previous_runner = active_runner
+
+        if restart_self:
+            self._request_stop_for_restart(normalized_project_dir)
+
+        with self.__class__._runner_lock:
+            self.project_dir = normalized_project_dir
+            self.running = True
+            self._stop_event.clear()
+            self._thread = threading.Thread(target=self._run, daemon=True)
+            self.__class__._active_runner = self
+            self.__class__._active_project_dir = normalized_project_dir
+
+        if previous_runner is not None:
+            previous_runner._request_stop_for_restart(normalized_project_dir)
+
         self._thread.start()
 
     def stop(self):
@@ -67,6 +131,21 @@ class LoopRunner:
         self._stop_event.set()
         self.current_stage = "idle"
         self._log("⏹ 루프 중단됨")
+        self._clear_active_runner_if_self()
+
+    def _request_stop_for_restart(self, next_project_dir: str):
+        self._log(f"🔁 기존 러너 정리 후 새 러너 시작 | next_project={next_project_dir}")
+        self.stop()
+        if self._thread is not None and self._thread.is_alive():
+            self._thread.join(timeout=5)
+            if self._thread.is_alive():
+                self._log("⚠ 기존 러너 종료 대기 시간 초과")
+
+    def _clear_active_runner_if_self(self):
+        with self.__class__._runner_lock:
+            if self.__class__._active_runner is self:
+                self.__class__._active_runner = None
+                self.__class__._active_project_dir = ""
 
     def _pop_queue(self) -> str | None:
         try:
@@ -85,6 +164,26 @@ class LoopRunner:
     def _log(self, msg: str):
         self.log_queue.put(msg)
         logger.info(msg)
+
+    def _get_project_cwd(self) -> str | None:
+        project_dir = (self.project_dir or "").strip()
+        return project_dir or None
+
+    def _format_command_for_log(self, cmd: list[str]) -> str:
+        return shlex.join([str(part) for part in cmd])
+
+    def _log_command(self, cmd: list[str], cwd: str | None):
+        self._log(f"[RUN] cwd={cwd or os.getcwd()} cmd={self._format_command_for_log(cmd)}")
+
+    def _run_project_command(self, cmd: list[str], **kwargs) -> subprocess.CompletedProcess:
+        cwd = self._get_project_cwd()
+        self._log_command(cmd, cwd)
+        return subprocess.run(cmd, cwd=cwd, **kwargs)
+
+    def _popen_project_command(self, cmd: list[str], **kwargs) -> subprocess.Popen:
+        cwd = self._get_project_cwd()
+        self._log_command(cmd, cwd)
+        return subprocess.Popen(cmd, cwd=cwd, **kwargs)
 
     def _get_active_section(self, text: str) -> str:
         match = re.search(r"^## Active\s*$", text, flags=re.MULTILINE)
@@ -210,78 +309,217 @@ class LoopRunner:
                 self._log(f"⚠ 프롬프트 읽기 실패 ({prompt_file.name}): {e}")
         return ""
 
-    def _run_claude(self, prompt: str, extra_context: str = "") -> tuple[str, int, bool]:
-        import json as _json
-        import threading as _threading
+    def _build_codex_command(
+        self, full_prompt: str, last_message_path: str, *, bypass_sandbox: bool = False
+    ) -> list[str]:
+        cmd = ["codex", "exec"]
+        if bypass_sandbox:
+            cmd.append("--dangerously-bypass-approvals-and-sandbox")
+        else:
+            cmd.append("--full-auto")
+        cmd += [
+            "--skip-git-repo-check",
+            "--ephemeral",
+            "--json",
+            "-o", last_message_path,
+            full_prompt,
+        ]
+        return cmd
+
+    def _extract_codex_json_lines(self, raw: str) -> list[str]:
+        try:
+            obj = json.loads(raw)
+        except json.JSONDecodeError:
+            return [raw.strip()] if raw.strip() else []
+        if not isinstance(obj, dict):
+            return []
+
+        lines: list[str] = []
+
+        def _add(text: object) -> None:
+            if isinstance(text, str):
+                for ln in text.strip().splitlines():
+                    cleaned = ln.strip()
+                    if cleaned and len(cleaned) <= 2000:
+                        lines.append(cleaned)
+
+        event_type = obj.get("type", "")
+
+        # codex JSONL 이벤트 형식 우선 처리
+        if event_type == "assistant":
+            for block in obj.get("message", {}).get("content", []):
+                if isinstance(block, dict) and block.get("type") == "text":
+                    _add(block.get("text", ""))
+        elif event_type == "result":
+            _add(obj.get("result", ""))
+        elif event_type in {"error", "system"}:
+            _add(obj.get("message", obj.get("error", "")))
+        elif event_type == "tool_result":
+            for block in obj.get("content", []):
+                if isinstance(block, dict) and block.get("type") == "text":
+                    _add(block.get("text", ""))
+        else:
+            # 알 수 없는 이벤트 — 재귀 탐색 fallback (depth 제한)
+            def _walk(value: object, depth: int = 0) -> None:
+                if depth > 4:
+                    return
+                if isinstance(value, dict):
+                    for key, nested in value.items():
+                        if key in {"text", "result", "error"} and isinstance(nested, str):
+                            _add(nested)
+                        else:
+                            _walk(nested, depth + 1)
+                elif isinstance(value, list):
+                    for item in value:
+                        _walk(item, depth + 1)
+            _walk(obj)
+
+        return lines
+
+    _PERM_RE = re.compile(r"permission.denied|access.denied|requires.approval|sandbox.violation", re.I)
+    _AUTH_RE = re.compile(r"\b401\b|unauthorized|invalid.api.key", re.I)
+    _RATE_RE = re.compile(r"\b429\b|rate.limit|too.many.requests", re.I)
+
+    def _classify_codex_error(self, output: str, returncode: int) -> str:
+        """오류 유형 반환: 'perm' | 'auth' | 'rate' | 'other'"""
+        if self._AUTH_RE.search(output):
+            return "auth"
+        if self._RATE_RE.search(output):
+            return "rate"
+        if returncode == 126 or self._PERM_RE.search(output):
+            return "perm"
+        return "other"
+
+    def _run_codex(
+        self, prompt: str, extra_context: str = "", *, bypass_sandbox: bool = False
+    ) -> tuple[str, int, bool]:
         full_prompt = prompt
-        timeout_sec = get_claude_timeout_sec()
+        timeout_sec = get_codex_timeout_sec()
         if extra_context:
             full_prompt += f"\n\n---\n\n{extra_context}"
+
+        last_message_fd, last_message_path = tempfile.mkstemp(
+            prefix="codex-last-message-",
+            suffix=".txt",
+            dir=self.project_dir if self.project_dir else None,
+        )
+        os.close(last_message_fd)
+
         try:
-            proc = subprocess.Popen(
-                [
-                    "claude", "-p", full_prompt,
-                    "--dangerously-skip-permissions",
-                    "--output-format", "stream-json",
-                    "--include-partial-messages",
-                    "--verbose",
-                ],
-                cwd=self.project_dir,
+            cmd = self._build_codex_command(full_prompt, last_message_path, bypass_sandbox=bypass_sandbox)
+            proc = self._popen_project_command(
+                cmd,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
                 text=True,
                 encoding="utf-8",
                 errors="replace",
             )
-            output_lines = []
+            output_lines: list[str] = []
 
-            def _reader():
-                if proc.stdout is None:
+            def _reader(pipe, label: str):
+                if pipe is None:
                     return
                 try:
-                    for raw in proc.stdout:
+                    for raw in pipe:
                         raw = raw.strip()
                         if not raw:
                             continue
-                        try:
-                            obj = _json.loads(raw)
-                            # assistant 텍스트 델타만 추출
-                            t = obj.get("type", "")
-                            if t == "assistant":
-                                for block in obj.get("message", {}).get("content", []):
-                                    if block.get("type") == "text":
-                                        for ln in block["text"].splitlines():
-                                            if ln.strip():
-                                                self._log(f"  {ln}")
-                                                output_lines.append(ln)
-                            elif t == "result":
-                                txt = obj.get("result", "")
-                                for ln in txt.splitlines():
-                                    if ln.strip():
-                                        self._log(f"  {ln}")
-                                        output_lines.append(ln)
-                        except _json.JSONDecodeError:
-                            if raw:
-                                self._log(f"  {raw}")
-                                output_lines.append(raw)
+                        parsed_lines = self._extract_codex_json_lines(raw) if label == "stdout" else [raw]
+                        for line in parsed_lines:
+                            cleaned = line.strip()
+                            if not cleaned:
+                                continue
+                            self._log(f"  {cleaned}")
+                            output_lines.append(cleaned)
                 except Exception as e:
-                    self._log(f"⚠ Claude 출력 읽기 실패: {e}")
+                    self._log(f"⚠ Codex {label} 읽기 실패: {e}")
 
-            t = _threading.Thread(target=_reader, daemon=True)
-            t.start()
+            stdout_thread = threading.Thread(target=_reader, args=(proc.stdout, "stdout"), daemon=True)
+            stderr_thread = threading.Thread(target=_reader, args=(proc.stderr, "stderr"), daemon=True)
+            stdout_thread.start()
+            stderr_thread.start()
             try:
                 proc.wait(timeout=timeout_sec)
             except subprocess.TimeoutExpired:
                 proc.kill()
-                self._log(f"⚠ Claude Code 실행 시간 초과 ({timeout_sec}초)")
-                return f"오류: claude 실행 시간 초과 ({timeout_sec}초)", 1, True
-            t.join(timeout=5)
+                self._log(f"⚠ Codex 실행 시간 초과 ({timeout_sec}초)")
+                return f"오류: codex 실행 시간 초과 ({timeout_sec}초)", 1, True
+            stdout_thread.join(timeout=5)
+            stderr_thread.join(timeout=5)
+
+            try:
+                last_message = Path(last_message_path).read_text(encoding="utf-8").strip()
+            except Exception:
+                last_message = ""
+            if last_message:
+                for line in last_message.splitlines():
+                    cleaned = line.strip()
+                    if cleaned:
+                        self._log(f"  {cleaned}")
+                        output_lines.append(cleaned)
+
             return "\n".join(output_lines), proc.returncode, False
         except FileNotFoundError:
-            return "오류: claude CLI를 찾을 수 없습니다.", 1, False
+            return "오류: codex CLI를 찾을 수 없습니다.", 1, False
         except Exception as e:
-            self._log(f"❌ Claude 호출 실패: {e}")
+            self._log(f"❌ Codex 호출 실패: {e}")
             return f"오류: {e}", 1, False
+        finally:
+            try:
+                Path(last_message_path).unlink(missing_ok=True)
+            except Exception:
+                pass
+
+    def _run_codex_with_retries(
+        self, prompt: str, extra_context: str = "", stage_label: str = "Codex 실행"
+    ) -> tuple[str, int, bool]:
+        attempts = get_codex_retry_count()
+        collected_outputs: list[str] = []
+        last_code = 1
+        last_timed_out = False
+        bypass = False
+
+        for attempt in range(1, attempts + 1):
+            if attempt > 1:
+                self._log(f"↻ {stage_label} 재시도 ({attempt}/{attempts})"
+                          + (" [bypass-sandbox]" if bypass else ""))
+            output, code, timed_out = self._run_codex(prompt, extra_context, bypass_sandbox=bypass)
+            if output:
+                collected_outputs.append(output)
+            last_code = code
+            last_timed_out = timed_out
+
+            if code == 0:
+                break
+
+            if self._stop_event.is_set():
+                break
+
+            error_kind = self._classify_codex_error(output, code)
+
+            if error_kind == "auth":
+                self._log(f"  ❌ 인증 오류 — 재시도 불가")
+                break
+
+            if error_kind == "perm" and not bypass:
+                self._log("  🔓 권한 오류 → --dangerously-bypass-approvals-and-sandbox 재시도")
+                bypass = True
+                continue
+
+            if attempt < attempts:
+                if error_kind == "rate":
+                    delay_sec = 30
+                    self._log(f"  ⏳ 레이트리밋 — {delay_sec}초 대기 후 재시도")
+                else:
+                    delay_sec = min(5 * attempt, 15)
+                    self._log(f"  ⏳ {delay_sec}초 후 재시도")
+                time.sleep(delay_sec)
+
+        return "\n".join(collected_outputs), last_code, last_timed_out
+
+    def _run_claude(self, prompt: str, extra_context: str = "") -> tuple[str, int, bool]:
+        return self._run_codex(prompt, extra_context)
 
     def _find_test_dir(self) -> Path:
         """tests/ 폴더가 있는 가장 적합한 디렉토리를 반환."""
@@ -294,11 +532,15 @@ class LoopRunner:
 
     def _run_tests(self) -> tuple[bool, str]:
         test_dir = self._find_test_dir()
-        self._log(f"  📂 테스트 경로: {test_dir.name}")
+        project_dir = Path(self.project_dir)
+        test_target = "."
+        tests_dir = test_dir / "tests"
+        if tests_dir.is_dir():
+            test_target = os.path.relpath(tests_dir, project_dir)
+        self._log(f"  📂 테스트 경로: {test_target}")
         try:
-            result = subprocess.run(
-                ["python", "-m", "pytest", "--tb=short", "-q"],
-                cwd=str(test_dir),
+            result = self._run_project_command(
+                ["python", "-m", "pytest", test_target, "--tb=short", "-q"],
                 capture_output=True,
                 text=True,
                 timeout=TEST_TIMEOUT_SEC,
@@ -334,10 +576,11 @@ class LoopRunner:
 
         for req in candidates:
             if req.exists():
-                self._log(f"📦 의존성 설치 중: {req.name} ({req.parent.name})")
+                req_target = os.path.relpath(req, proj)
+                self._log(f"📦 의존성 설치 중: {req_target} ({req.parent.name})")
                 try:
-                    result = subprocess.run(
-                        ["pip", "install", "-r", str(req), "-q"],
+                    result = self._run_project_command(
+                        ["pip", "install", "-r", req_target, "-q"],
                         capture_output=True, text=True, timeout=120, encoding="utf-8",
                     )
                     if result.returncode != 0:
@@ -347,27 +590,226 @@ class LoopRunner:
                 except Exception as e:
                     self._log(f"  ❌ 의존성 설치 실패: {e}")
 
+    _CODE_EXTS = {".py", ".js", ".ts", ".tsx", ".jsx", ".go", ".java", ".rs", ".kt"}
+    _SKIP_DIRS = {"node_modules", "__pycache__", ".git", "venv", ".venv", "dist", "build"}
+
+    def _detect_code_files(self) -> list[Path]:
+        proj = Path(self.project_dir)
+        return [
+            f for f in proj.rglob("*")
+            if f.suffix in self._CODE_EXTS
+            and not any(p in self._SKIP_DIRS for p in f.parts)
+        ]
+
     def _run_scaffold_if_needed(self) -> bool:
-        """TASKS.md가 없으면 scaffold_generator를 Claude Code로 자동 실행. 생성됐으면 True."""
+        """TASKS.md가 없으면 프로젝트 상태에 따라 적절한 방법으로 생성."""
         tasks_path = Path(self.project_dir) / "TASKS.md"
         if tasks_path.exists():
             return False
-        self._log("📋 TASKS.md 없음 — scaffold 자동 생성 시작")
-        prompt = (
-            f"D:/auto_dev/ai_project_scaffold_generator.py를 실행해서 "
-            f"이 프로젝트({self.project_dir})에 맞는 TASKS.md와 PRD.md를 생성해라. "
-            f"프로젝트 경로: {self.project_dir}"
+        self._log("📋 TASKS.md 없음 — scaffold 생성 시작")
+        code_files = self._detect_code_files()
+        if code_files:
+            self._log(f"  📂 기존 코드 {len(code_files)}개 감지 → 코드 분석 후 TASKS.md 생성")
+            return self._scaffold_from_code_analysis(code_files)
+        self._log("  🌱 코드 파일 없음 → template provider scaffold 분기")
+        return self._scaffold_from_template()
+
+    def _scaffold_from_template(self) -> bool:
+        """빈 프로젝트: scaffold_generator 템플릿으로 TASKS.md 생성."""
+        tasks_path = Path(self.project_dir) / "TASKS.md"
+        folder_name = Path(self.project_dir).name
+        try:
+            self._log(f"[SCAFFOLD] provider=template build_tag={BUILD_TAG}")
+            result = self._run_project_command(
+                [
+                    "python",
+                    str(AUTO_DEV_DIR / "ai_project_scaffold_generator.py"),
+                    "--description", folder_name,
+                    "--path", self.project_dir,
+                    "--stack", "Streamlit",
+                    "--provider", "template",
+                ],
+                capture_output=True, text=True, timeout=120,
+                encoding="utf-8", errors="replace",
+            )
+            for line in (result.stdout or "").splitlines():
+                if line.strip():
+                    self._log(f"  {line}")
+            if result.returncode != 0:
+                for line in (result.stderr or "").splitlines():
+                    if line.strip():
+                        self._log(f"  ⚠ {line}")
+            if tasks_path.exists():
+                self._log("✅ scaffold 자동 생성 완료")
+                return True
+            self._log("⚠ scaffold 생성 실패 — TASKS.md 없이 루프 시작 불가")
+            return False
+        except subprocess.TimeoutExpired:
+            self._log("⚠ scaffold 생성 시간 초과 (120초)")
+            return False
+        except Exception as e:
+            self._log(f"⚠ scaffold 실행 오류: {e}")
+            return False
+
+    def summarize_codebase(self, code_files: list[Path]) -> str:
+        """전체 원문 대신 구조 요약만 LLM에 전달한다."""
+        proj = Path(self.project_dir)
+        prioritized: list[Path] = []
+        for name in ("CLAUDE.md", "README.md"):
+            candidate = proj / name
+            if candidate.exists():
+                prioritized.append(candidate)
+        remaining = [f for f in code_files if f not in prioritized]
+        top_code = sorted(remaining, key=lambda f: f.stat().st_size, reverse=True)[:8]
+        targets = prioritized + top_code
+
+        sections = [f"PROJECT: {proj.name}", f"BUILD_TAG: {BUILD_TAG}"]
+        for path in targets:
+            try:
+                text = path.read_text(encoding="utf-8", errors="replace")
+            except Exception as exc:
+                sections.append(f"- file: {path.relative_to(proj)}")
+                sections.append(f"  read_error: {exc}")
+                continue
+
+            imports: list[str] = []
+            functions: list[str] = []
+            classes: list[str] = []
+            entrypoint = "none"
+            risks: list[str] = []
+
+            if path.suffix == ".py":
+                try:
+                    tree = ast.parse(text)
+                    for node in ast.walk(tree):
+                        if isinstance(node, ast.Import):
+                            imports.extend(alias.name for alias in node.names[:5])
+                        elif isinstance(node, ast.ImportFrom):
+                            mod = node.module or ""
+                            imports.append(mod)
+                        elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                            functions.append(node.name)
+                        elif isinstance(node, ast.ClassDef):
+                            classes.append(node.name)
+                    if re.search(r'if\s+__name__\s*==\s*[\'"]__main__[\'"]', text):
+                        entrypoint = "__main__"
+                    elif re.search(r"\b(app|main|run|start)\s*\(", text):
+                        entrypoint = "callable-detected"
+                except SyntaxError:
+                    risks.append("python-parse-error")
+            else:
+                imports = re.findall(r'^\s*(?:import|from|require\(|use\s+)\s*([A-Za-z0-9_./-]+)', text, flags=re.MULTILINE)[:8]
+                functions = re.findall(r'\b(?:function|def|async function|class)\s+([A-Za-z_][A-Za-z0-9_]*)', text)[:10]
+                if re.search(r"\b(main|start|listen|serve)\b", text):
+                    entrypoint = "keyword-detected"
+
+            lower_text = text.lower()
+            if "os.environ.get(" in text and ('"' in text or "'" in text):
+                risks.append("env-fallback-present")
+            if "subprocess" in lower_text or "shell=true" in lower_text:
+                risks.append("subprocess-usage")
+            if "openai" in lower_text or "anthropic" in lower_text or "claude" in lower_text:
+                risks.append("llm-coupling")
+            if "monitor.py" in path.name.lower():
+                risks.append("large-monitor-file")
+
+            import_list = list(dict.fromkeys(i for i in imports if i))[:10]
+            function_list = list(dict.fromkeys(functions))[:12]
+            class_list = list(dict.fromkeys(classes))[:8]
+            risk_list = list(dict.fromkeys(risks))
+
+            sections.append(f"- file: {path.relative_to(proj)}")
+            sections.append(f"  imports: {', '.join(import_list) or 'none'}")
+            sections.append(f"  functions: {', '.join(function_list) or 'none'}")
+            sections.append(f"  classes: {', '.join(class_list) or 'none'}")
+            sections.append(f"  entrypoint: {entrypoint}")
+            sections.append(f"  core_risk_estimate: {', '.join(risk_list) or 'none'}")
+        return "\n".join(sections)
+
+    def _write_existing_safe_tasks(self, summary: str) -> bool:
+        tasks_path = Path(self.project_dir) / "TASKS.md"
+        proj_name = Path(self.project_dir).name
+        summary_lines = [line for line in summary.splitlines() if line.startswith("- file: ")][:5]
+        focus = "\n".join(summary_lines) or "- file: existing codebase"
+        doc = (
+            f"# TASKS.md — {proj_name} / Based on: Existing Safe Fallback\n\n"
+            f"Codex 분석 실패 시 기존 코드 구조 요약 기반으로 생성됨.\n\n"
+            f"## Analysis Summary\n\n{focus}\n\n"
+            f"## Task Details\n\n"
+            f"### TASK-01 Existing behavior snapshot\n"
+            f"- 현재 진입점과 실행 흐름을 재현 가능한 명령어로 고정한다.\n"
+            f"- 수락 기준: 핵심 실행 경로 1개 이상 문서화.\n"
+            f"- 수락 기준: 실패 로그 위치 확인 가능.\n"
+            f"- 검증: pytest 또는 수동 실행 절차 기록.\n\n"
+            f"### TASK-02 High-risk branch hardening\n"
+            f"- 요약에서 식별된 위험 분기를 우선 보강한다.\n"
+            f"- 수락 기준: 예외 처리 추가.\n"
+            f"- 수락 기준: 잘못된 provider/entry 흐름 차단.\n"
+            f"- 검증: 실패 케이스 재현.\n\n"
+            f"### TASK-03 Regression coverage\n"
+            f"- 현재 버그 재현 테스트를 추가한다.\n"
+            f"- 수락 기준: 정상/예외/회귀 케이스 포함.\n"
+            f"- 수락 기준: 자동 실행 가능.\n"
+            f"- 검증: pytest.\n\n"
+            f"### TASK-04 Logging and observability\n"
+            f"- 시작 로그와 주요 분기 로그를 강화한다.\n"
+            f"- 수락 기준: build tag 및 provider 분기 확인 가능.\n"
+            f"- 수락 기준: 실패 지점 추적 가능.\n"
+            f"- 검증: runner.log 확인.\n\n"
+            f"### TASK-05 Safe incremental cleanup\n"
+            f"- 동작을 바꾸지 않는 범위에서 중복/취약 분기를 정리한다.\n"
+            f"- 수락 기준: 기존 핵심 흐름 유지.\n"
+            f"- 수락 기준: 새 회귀 없음.\n"
+            f"- 검증: 테스트 재실행.\n\n"
+            f"## Active\n\n"
+            f"### Auto Dev Queue\n\n"
+            f"- [ ] [TASK-01] Existing behavior snapshot\n"
+            f"- [ ] [TASK-02] High-risk branch hardening\n"
+            f"- [ ] [TASK-03] Regression coverage\n"
+            f"- [ ] [TASK-04] Logging and observability\n"
+            f"- [ ] [TASK-05] Safe incremental cleanup\n"
         )
-        _, code, _ = self._run_claude(prompt)
+        tasks_path.write_text(doc, encoding="utf-8")
+        self._log("✅ existing-safe fallback TASKS.md 생성 완료")
+        return True
+
+    def _scaffold_from_code_analysis(self, code_files: list[Path]) -> bool:
+        """기존 코드 분석 → Codex가 실제 코드 기반 TASKS.md 직접 생성."""
+        tasks_path = Path(self.project_dir) / "TASKS.md"
+        proj = Path(self.project_dir)
+        summary = self.summarize_codebase(code_files)
+
+        prompt = (
+            f"아래는 '{proj.name}' 프로젝트의 구조 요약이다. 전체 파일 원문이 아니라 요약만 제공된다.\n\n"
+            + summary
+            + f"\n\n위 요약을 분석해서 이 프로젝트에 실제로 필요한 개선·구현 작업을 TASKS.md로 작성해라.\n\n"
+            f"[규칙]\n"
+            f"1. 이미 잘 구현된 기능은 태스크로 만들지 않는다\n"
+            f"2. 실제로 부족하거나 개선이 필요한 부분만 5~7개 태스크로 만든다\n"
+            f"3. 각 태스크는 구체적이고 실행 가능하게 작성한다\n"
+            f"4. monitor.py 같은 대형 파일은 원문 전체를 요구하지 말고 요약만 기준으로 판단한다\n"
+            f"4. 파일 마지막에 반드시 아래 형식의 Active 섹션 포함:\n\n"
+            f"## Active\n\n### Auto Dev Queue\n\n"
+            f"- [ ] [TASK-01] 태스크 제목\n- [ ] [TASK-02] 태스크 제목\n...\n\n"
+            f"TASKS.md 파일을 {self.project_dir} 에 저장해라."
+        )
+
+        self._log(f"🔍 코드 분석 중... build_tag={BUILD_TAG}")
+        self._log(f"[SCAFFOLD] provider=codex-analysis summary_chars={len(summary)}")
+        _, code, _ = self._run_codex_with_retries(prompt, stage_label="코드 분석")
+
         if tasks_path.exists():
-            self._log("✅ scaffold 자동 생성 완료")
+            self._log("✅ 코드 분석 기반 TASKS.md 생성 완료")
             return True
-        self._log("⚠ scaffold 생성 실패 — TASKS.md 없이 루프 시작 불가")
-        return False
+        self._log("⚠ Codex 분석 실패 — existing-safe fallback 시도")
+        if self._write_existing_safe_tasks(summary):
+            return True
+        self._log("⚠ existing-safe fallback 실패 — template provider로 재시도")
+        return self._scaffold_from_template()
 
     def _run(self):
         try:
-            self._log("▶ 루프 시작")
+            self._log(f"▶ 루프 시작 | build_tag={BUILD_TAG} | pid={os.getpid()} | project={self.project_dir}")
             self._run_scaffold_if_needed()
             selection = self._get_next_task_selection()
             if not selection:
@@ -415,24 +857,22 @@ class LoopRunner:
                 pre_summary = pre_output.strip().splitlines()[-1] if pre_output.strip() else "결과 없음"
                 self._log(f"  기준: {pre_summary}")
 
-                # ── 1단계: Claude Code 하드닝 ──────────────────────────────
+                # ── 1단계: Codex 하드닝 ───────────────────────────────────
                 self.current_stage = "hardening"
-                self._log("🔨 [1/3] Claude Code 하드닝 실행 중...")
+                self._log("🔨 [1/3] Codex 하드닝 실행 중...")
                 harden_prompt = self._read_prompt(HARDEN_PROMPT_FILE)
                 context = f"현재 태스크: {display_task}\n프로젝트 경로: {self.project_dir}"
-                harden_output, harden_code, harden_timed_out = self._run_claude(harden_prompt, context)
+                harden_output, harden_code, harden_timed_out = self._run_codex_with_retries(
+                    harden_prompt,
+                    context,
+                    stage_label="[1/3] 하드닝",
+                )
                 if harden_code != 0:
-                    self._log("↻ [1/3] 하드닝 재시도")
-                    retry_prompt = harden_prompt or "하드닝 실행"
-                    retry_context = f"현재 태스크: {display_task}"
-                    harden_output, harden_code, retry_timed_out = self._run_claude(retry_prompt, retry_context)
-                    harden_timed_out = harden_timed_out and retry_timed_out
-                    if harden_code != 0:
-                        if harden_timed_out:
-                            self.current_stage = "error"
-                            self._log("⚠ Claude Code 타임아웃 2회 연속 발생. 루프 일시 중지 — 수동 확인 필요")
-                            break
-                        self._log("⚠ 하드닝 실패. 다음 단계로 진행")
+                    if harden_timed_out:
+                        self.current_stage = "error"
+                        self._log("⚠ Codex 타임아웃 재시도 한도 초과. 루프 일시 중지 — 수동 확인 필요")
+                        break
+                    self._log("⚠ Codex 하드닝 실패. 다음 단계로 진행")
                 if self._stop_event.is_set():
                     break
 
@@ -459,7 +899,16 @@ class LoopRunner:
                 self._log("🐛 [3/3] 테스트 실패. 디버그 실행 중...")
                 debug_prompt = self._read_prompt(DEBUG_PROMPT_FILE)
                 debug_context = f"현재 태스크: {display_task}\n에러 로그:\n{test_output}"
-                self._run_claude(debug_prompt, debug_context)
+                debug_output, debug_code, debug_timed_out = self._run_codex_with_retries(
+                    debug_prompt,
+                    debug_context,
+                    stage_label="[3/3] 디버그",
+                )
+                if debug_code != 0:
+                    if debug_timed_out:
+                        self._log("⚠ Codex 디버그가 재시도 후에도 시간 초과되었습니다.")
+                    elif debug_output:
+                        self._log("⚠ Codex 디버그가 실패했지만 재테스트는 계속 진행합니다.")
                 if self._stop_event.is_set():
                     break
 
@@ -476,7 +925,7 @@ class LoopRunner:
                     self._log(f"  → [{task}] 완료 처리")
                 else:
                     self.current_stage = "error"
-                    self._log("⚠ 재테스크도 실패. 루프 일시 중지 — 수동 확인 필요")
+                    self._log("⚠ 재테스트도 실패. 루프 일시 중지 — 수동 확인 필요")
                     break
         except Exception as e:
             self.current_stage = "error"
@@ -485,6 +934,7 @@ class LoopRunner:
             self.running = False
             if self.current_stage not in {"done", "error"}:
                 self.current_stage = "idle"
+            self._clear_active_runner_if_self()
             self._log("⏹ 루프 가동 중지")
 
 
@@ -495,17 +945,27 @@ def run_self_tests():
     import tempfile
     import textwrap
 
-    original_timeout = os.environ.get("CLAUDE_TIMEOUT")
-    os.environ.pop("CLAUDE_TIMEOUT", None)
-    assert get_claude_timeout_sec() == DEFAULT_CLAUDE_TIMEOUT_SEC
-    os.environ["CLAUDE_TIMEOUT"] = "240"
-    assert get_claude_timeout_sec() == 240
-    os.environ["CLAUDE_TIMEOUT"] = "invalid"
-    assert get_claude_timeout_sec() == DEFAULT_CLAUDE_TIMEOUT_SEC
+    original_timeout = os.environ.get("CODEX_TIMEOUT")
+    os.environ.pop("CODEX_TIMEOUT", None)
+    assert get_codex_timeout_sec() == DEFAULT_CLAUDE_TIMEOUT_SEC
+    os.environ["CODEX_TIMEOUT"] = "240"
+    assert get_codex_timeout_sec() == 240
+    os.environ["CODEX_TIMEOUT"] = "invalid"
+    assert get_codex_timeout_sec() == DEFAULT_CLAUDE_TIMEOUT_SEC
     if original_timeout is None:
-        os.environ.pop("CLAUDE_TIMEOUT", None)
+        os.environ.pop("CODEX_TIMEOUT", None)
     else:
-        os.environ["CLAUDE_TIMEOUT"] = original_timeout
+        os.environ["CODEX_TIMEOUT"] = original_timeout
+
+    runner = LoopRunner()
+    command = runner._build_codex_command("sample prompt", "last-message.txt")
+    assert command[:2] == ["codex", "exec"]
+    assert "--full-auto" in command
+    assert "--sandbox" not in command
+    assert "--ephemeral" in command
+    bypass_cmd = runner._build_codex_command("p", "f", bypass_sandbox=True)
+    assert "--dangerously-bypass-approvals-and-sandbox" in bypass_cmd
+    assert "--full-auto" not in bypass_cmd
 
     with tempfile.TemporaryDirectory() as tmp:
         tasks_path = Path(tmp) / "TASKS.md"
@@ -632,9 +1092,11 @@ def run_self_tests():
             def _read_prompt(self, prompt_file: Path) -> str:
                 return "prompt"
 
-            def _run_claude(self, prompt: str, extra_context: str = "") -> tuple[str, int, bool]:
+            def _run_codex(
+                self, prompt: str, extra_context: str = "", *, bypass_sandbox: bool = False
+            ) -> tuple[str, int, bool]:
                 self.timeout_calls += 1
-                return "오류: claude 실행 시간 초과", 1, True
+                return "오류: codex 실행 시간 초과", 1, True
 
             def _run_tests(self) -> tuple[bool, str]:
                 self.test_calls += 1
@@ -680,6 +1142,155 @@ def run_self_tests():
         r = LoopRunner()
         r.project_dir = tmp
         assert r._find_test_dir() == Path(tmp)
+
+    # ── project_dir cwd 보정 ─────────────────────────────────────────────────
+    with tempfile.TemporaryDirectory() as tmp:
+        proj = Path(tmp)
+        (proj / "tests").mkdir()
+        calls: list[dict[str, object]] = []
+        original_run = subprocess.run
+
+        def fake_run(cmd, **kwargs):
+            calls.append({"cmd": cmd, "cwd": kwargs.get("cwd")})
+
+            class Result:
+                returncode = 0
+                stdout = "ok"
+                stderr = ""
+
+            return Result()
+
+        subprocess.run = fake_run
+        try:
+            r = LoopRunner()
+            r.project_dir = tmp
+            passed, _ = r._run_tests()
+            assert passed is True
+        finally:
+            subprocess.run = original_run
+
+        assert calls, "pytest 실행 기록이 없습니다."
+        assert calls[0]["cwd"] == tmp
+        assert calls[0]["cmd"][:4] == ["python", "-m", "pytest", "tests"]
+        assert any(f"[RUN] cwd={tmp} cmd=python -m pytest tests --tb=short -q" in line for line in list(r.log_queue.queue))
+
+    with tempfile.TemporaryDirectory() as tmp:
+        proj = Path(tmp)
+        (proj / "requirements.txt").write_text("pytest\n", encoding="utf-8")
+        calls = []
+        original_run = subprocess.run
+
+        def fake_run(cmd, **kwargs):
+            calls.append({"cmd": cmd, "cwd": kwargs.get("cwd")})
+
+            class Result:
+                returncode = 0
+                stdout = ""
+                stderr = ""
+
+            return Result()
+
+        subprocess.run = fake_run
+        try:
+            r = LoopRunner()
+            r.project_dir = tmp
+            r._install_deps()
+        finally:
+            subprocess.run = original_run
+
+        assert calls, "requirements 설치 기록이 없습니다."
+        assert calls[0]["cwd"] == tmp
+        assert calls[0]["cmd"][:4] == ["pip", "install", "-r", "requirements.txt"]
+
+    with tempfile.TemporaryDirectory() as tmp:
+        calls: list[dict[str, object]] = []
+
+        class FakeProc:
+            def __init__(self):
+                self.stdout = []
+                self.stderr = []
+                self.returncode = 0
+
+            def wait(self, timeout=None):
+                return 0
+
+        class CaptureRunner(LoopRunner):
+            def _popen_project_command(self, cmd: list[str], **kwargs):
+                calls.append({"cmd": cmd, "cwd": kwargs.get("cwd", self._get_project_cwd())})
+                return FakeProc()
+
+        r = CaptureRunner()
+        r.project_dir = tmp
+        codex_output, codex_code, codex_timed_out = r._run_codex("prompt")
+        claude_output, claude_code, claude_timed_out = r._run_claude("prompt")
+
+        assert codex_output == ""
+        assert codex_code == 0
+        assert codex_timed_out is False
+        assert claude_output == ""
+        assert claude_code == 0
+        assert claude_timed_out is False
+        assert len(calls) == 2
+        assert calls[0]["cwd"] == tmp
+        assert calls[1]["cwd"] == tmp
+        assert calls[0]["cmd"][0] == "codex"
+        assert calls[1]["cmd"][0] == "codex"
+
+    # ── 단일 실행 보장 ───────────────────────────────────────────────────────
+    class BlockingRunner(LoopRunner):
+        def _run(self):
+            try:
+                self.running = True
+                self.current_stage = "running"
+                self._log(f"blocking-runner-start:{self.project_dir}")
+                while not self._stop_event.is_set():
+                    time.sleep(0.01)
+            finally:
+                self.running = False
+                self.current_stage = "idle"
+                self._clear_active_runner_if_self()
+                self._log(f"blocking-runner-stop:{self.project_dir}")
+
+    LoopRunner._active_runner = None
+    LoopRunner._active_project_dir = ""
+    BlockingRunner._active_runner = None
+    BlockingRunner._active_project_dir = ""
+
+    with tempfile.TemporaryDirectory() as tmp:
+        r = BlockingRunner()
+        r.start(tmp)
+        time.sleep(0.05)
+        first_thread = r._thread
+        r.start(tmp)
+        time.sleep(0.05)
+        assert r._thread is first_thread
+        assert any("이미 실행 중" in line for line in list(r.log_queue.queue))
+        r.stop()
+        if r._thread is not None:
+            r._thread.join(timeout=1)
+
+    LoopRunner._active_runner = None
+    LoopRunner._active_project_dir = ""
+    BlockingRunner._active_runner = None
+    BlockingRunner._active_project_dir = ""
+
+    with tempfile.TemporaryDirectory() as tmp1, tempfile.TemporaryDirectory() as tmp2:
+        first = BlockingRunner()
+        second = BlockingRunner()
+        first.start(tmp1)
+        time.sleep(0.05)
+        second.start(tmp2)
+        time.sleep(0.1)
+        assert first._stop_event.is_set()
+        assert second.running is True
+        assert BlockingRunner._active_project_dir == str(Path(tmp2))
+        assert second._thread is not None and second._thread.is_alive()
+        assert any("기존 러너 정리 후 새 러너 시작" in line for line in list(first.log_queue.queue))
+        second.stop()
+        if first._thread is not None:
+            first._thread.join(timeout=1)
+        if second._thread is not None:
+            second._thread.join(timeout=1)
 
     print("self-tests passed")
 

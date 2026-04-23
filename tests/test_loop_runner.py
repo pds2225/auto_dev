@@ -4,6 +4,10 @@ import tempfile
 import textwrap
 from pathlib import Path
 
+TEST_TEMP_ROOT = Path(__file__).parent / ".tmp"
+TEST_TEMP_ROOT.mkdir(parents=True, exist_ok=True)
+tempfile.tempdir = str(TEST_TEMP_ROOT)
+
 sys.path.insert(0, str(Path(__file__).parent.parent / "dashboard"))
 
 from loop_runner import DEFAULT_CLAUDE_TIMEOUT_SEC, LoopRunner, get_claude_timeout_sec
@@ -128,6 +132,102 @@ def test_mark_task_done():
         assert "- [ ] [TASK-01] 할 일" not in result
 
 
+# ── scaffold 분기 ────────────────────────────────────────────────────────────
+
+def test_detect_code_files_empty_project():
+    with tempfile.TemporaryDirectory() as tmp:
+        r = LoopRunner()
+        r.project_dir = tmp
+        assert r._detect_code_files() == []
+
+
+def test_detect_code_files_finds_python():
+    with tempfile.TemporaryDirectory() as tmp:
+        (Path(tmp) / "main.py").write_text("print('hi')")
+        (Path(tmp) / "README.md").write_text("# readme")
+        r = LoopRunner()
+        r.project_dir = tmp
+        files = r._detect_code_files()
+        assert len(files) == 1
+        assert files[0].name == "main.py"
+
+
+def test_detect_code_files_skips_pycache():
+    with tempfile.TemporaryDirectory() as tmp:
+        cache = Path(tmp) / "__pycache__"
+        cache.mkdir()
+        (cache / "mod.py").write_text("x=1")
+        (Path(tmp) / "app.py").write_text("x=1")
+        r = LoopRunner()
+        r.project_dir = tmp
+        files = r._detect_code_files()
+        assert all("__pycache__" not in str(f) for f in files)
+        assert len(files) == 1
+
+
+def test_scaffold_routes_to_template_when_empty():
+    """코드 파일 없으면 _scaffold_from_template 경로로 가야 함 (파일 없어 실패하지만 분기는 확인)."""
+    with tempfile.TemporaryDirectory() as tmp:
+        r = LoopRunner()
+        r.project_dir = tmp
+        assert r._detect_code_files() == []
+
+
+def test_scaffold_routes_to_analysis_when_code_exists():
+    """코드 파일 있으면 _scaffold_from_code_analysis 경로로 가야 함 (분기 단위 테스트)."""
+    with tempfile.TemporaryDirectory() as tmp:
+        (Path(tmp) / "app.py").write_text("def main(): pass")
+        r = LoopRunner()
+        r.project_dir = tmp
+        code_files = r._detect_code_files()
+        assert len(code_files) == 1
+
+
+def test_summarize_codebase_uses_structure_not_full_source():
+    with tempfile.TemporaryDirectory() as tmp:
+        app_py = Path(tmp) / "monitor.py"
+        app_py.write_text(textwrap.dedent("""\
+            import os
+            import subprocess
+
+            class Monitor:
+                pass
+
+            def main():
+                return os.environ.get("TOKEN", "fallback")
+
+            if __name__ == "__main__":
+                main()
+        """), encoding="utf-8")
+        r = LoopRunner()
+        r.project_dir = tmp
+        summary = r.summarize_codebase([app_py])
+        assert "file: monitor.py" in summary
+        assert "imports: os, subprocess" in summary
+        assert "functions: main" in summary
+        assert "classes: Monitor" in summary
+        assert "entrypoint: __main__" in summary
+        assert "core_risk_estimate:" in summary
+        assert 'return os.environ.get("TOKEN", "fallback")' not in summary
+
+
+def test_scaffold_code_analysis_falls_back_to_existing_safe_when_claude_fails():
+    with tempfile.TemporaryDirectory() as tmp:
+        app_py = Path(tmp) / "app.py"
+        app_py.write_text("def main():\n    return 1\n", encoding="utf-8")
+
+        class FallbackRunner(LoopRunner):
+            def _run_claude(self, prompt, extra_context=""):
+                return "", 1, False
+
+        r = FallbackRunner()
+        r.project_dir = tmp
+        assert r._scaffold_from_code_analysis([app_py]) is True
+        tasks_text = (Path(tmp) / "TASKS.md").read_text(encoding="utf-8")
+        assert "Based on: Existing Safe Fallback" in tasks_text
+        assert "[TASK-01] Existing behavior snapshot" in tasks_text
+
+
 # ── _find_test_dir ────────────────────────────────────────────────────────────
 
 def test_find_test_dir_subdirectory():
@@ -170,7 +270,7 @@ def test_timeout_stops_loop():
 
             def _read_prompt(self, prompt_file): return "prompt"
 
-            def _run_claude(self, prompt, extra_context=""):
+            def _run_codex(self, prompt, extra_context="", *, bypass_sandbox=False):
                 self.timeout_calls += 1
                 return "오류: claude 실행 시간 초과", 1, True
 
@@ -186,3 +286,129 @@ def test_timeout_stops_loop():
         r._run()
         assert r.current_stage == "error"
         assert r.timeout_calls == 2
+
+
+# ── codex 커맨드 빌더 ──────────────────────────────────────────────────────────
+
+def test_build_codex_command_default():
+    r = LoopRunner()
+    r.project_dir = "/tmp/proj"
+    cmd = r._build_codex_command("hello", "/tmp/out.txt")
+    assert cmd[:2] == ["codex", "exec"]
+    assert "--full-auto" in cmd
+    assert "--sandbox" not in cmd
+    assert "--ephemeral" in cmd
+    assert "--json" in cmd
+    assert "-o" in cmd
+    assert "hello" in cmd
+
+
+def test_build_codex_command_bypass_sandbox():
+    r = LoopRunner()
+    r.project_dir = "/tmp/proj"
+    cmd = r._build_codex_command("hello", "/tmp/out.txt", bypass_sandbox=True)
+    assert "--dangerously-bypass-approvals-and-sandbox" in cmd
+    assert "--full-auto" not in cmd
+
+
+# ── JSON 파서 ─────────────────────────────────────────────────────────────────
+
+def test_extract_codex_json_assistant_event():
+    r = LoopRunner()
+    raw = '{"type":"assistant","message":{"content":[{"type":"text","text":"작업 완료"}]}}'
+    lines = r._extract_codex_json_lines(raw)
+    assert lines == ["작업 완료"]
+
+
+def test_extract_codex_json_result_event():
+    r = LoopRunner()
+    raw = '{"type":"result","result":"성공적으로 완료됨"}'
+    lines = r._extract_codex_json_lines(raw)
+    assert lines == ["성공적으로 완료됨"]
+
+
+def test_extract_codex_json_error_event():
+    r = LoopRunner()
+    raw = '{"type":"error","message":"rate limit exceeded"}'
+    lines = r._extract_codex_json_lines(raw)
+    assert lines == ["rate limit exceeded"]
+
+
+def test_extract_codex_json_invalid_falls_back():
+    r = LoopRunner()
+    lines = r._extract_codex_json_lines("not json at all")
+    assert lines == ["not json at all"]
+
+
+def test_extract_codex_json_empty_string():
+    r = LoopRunner()
+    assert r._extract_codex_json_lines("") == []
+
+
+def test_extract_codex_json_skips_long_text():
+    r = LoopRunner()
+    long_text = "x" * 2001
+    raw = f'{{"type":"result","result":"{long_text}"}}'
+    lines = r._extract_codex_json_lines(raw)
+    assert lines == []
+
+
+# ── 에러 분류 ─────────────────────────────────────────────────────────────────
+
+def test_classify_auth_error():
+    r = LoopRunner()
+    assert r._classify_codex_error("Error 401 unauthorized", 1) == "auth"
+    assert r._classify_codex_error("invalid api key provided", 1) == "auth"
+
+
+def test_classify_rate_error():
+    r = LoopRunner()
+    assert r._classify_codex_error("429 rate limit exceeded", 1) == "rate"
+    assert r._classify_codex_error("too many requests", 1) == "rate"
+
+
+def test_classify_perm_error():
+    r = LoopRunner()
+    assert r._classify_codex_error("permission denied", 1) == "perm"
+    assert r._classify_codex_error("", 126) == "perm"
+
+
+def test_classify_other_error():
+    r = LoopRunner()
+    assert r._classify_codex_error("unexpected failure", 1) == "other"
+    assert r._classify_codex_error("", 1) == "other"
+
+
+# ── 재시도 정책 ───────────────────────────────────────────────────────────────
+
+def test_retry_stops_on_auth_error():
+    """인증 오류는 재시도 없이 즉시 종료해야 한다."""
+    call_count = {"n": 0}
+
+    class AuthErrRunner(LoopRunner):
+        def _run_codex(self, prompt, extra_context="", *, bypass_sandbox=False):
+            call_count["n"] += 1
+            return "Error 401 unauthorized", 1, False
+
+    r = AuthErrRunner()
+    r.project_dir = "/tmp"
+    r._run_codex_with_retries("test")
+    assert call_count["n"] == 1
+
+
+def test_retry_escalates_to_bypass_on_perm_error():
+    """권한 오류 발생 시 두 번째 시도는 bypass_sandbox=True여야 한다."""
+    calls = []
+
+    class PermErrRunner(LoopRunner):
+        def _run_codex(self, prompt, extra_context="", *, bypass_sandbox=False):
+            calls.append(bypass_sandbox)
+            if not bypass_sandbox:
+                return "permission denied", 1, False
+            return "ok", 0, False
+
+    r = PermErrRunner()
+    r.project_dir = "/tmp"
+    out, code, _ = r._run_codex_with_retries("test")
+    assert calls == [False, True]
+    assert code == 0
