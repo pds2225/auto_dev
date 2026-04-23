@@ -2,6 +2,10 @@ import sys
 import tempfile
 from pathlib import Path
 
+TEST_TEMP_ROOT = Path.home() / ".codex" / "memories" / "test_tmp"
+TEST_TEMP_ROOT.mkdir(exist_ok=True)
+tempfile.tempdir = str(TEST_TEMP_ROOT)
+
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from ai_project_scaffold_generator import (
@@ -9,7 +13,9 @@ from ai_project_scaffold_generator import (
     fallback_derivatives,
     fallback_prd,
     get_next_task_id,
+    normalize_provider,
     render_tasks,
+    resolve_provider_and_api_key,
 )
 
 
@@ -70,3 +76,24 @@ def test_append_task_preserves_existing_active():
         result = tasks_path.read_text(encoding="utf-8")
         assert "- [ ] [TASK-01] 기존 태스크" in result
         assert "TASK-02" in result  # get_next_task_id가 TASK-02를 부여
+
+
+def test_normalize_provider_defaults_to_template():
+    assert normalize_provider("") == "template"
+    assert normalize_provider("unknown") == "template"
+
+
+def test_resolve_provider_template_ignores_env_keys(monkeypatch):
+    monkeypatch.setenv("OPENAI_API_KEY", "openai-env-key")
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "claude-env-key")
+    provider, api_key = resolve_provider_and_api_key("template", "")
+    assert provider == "template"
+    assert api_key == ""
+
+
+def test_resolve_provider_uses_matching_env_key(monkeypatch):
+    monkeypatch.setenv("OPENAI_API_KEY", "openai-env-key")
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "claude-env-key")
+    provider, api_key = resolve_provider_and_api_key("claude", "")
+    assert provider == "claude"
+    assert api_key == "claude-env-key"
