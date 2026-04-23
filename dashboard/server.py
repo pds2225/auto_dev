@@ -1,5 +1,9 @@
+import contextlib
+import io
 import json
 import re
+import sys
+import threading
 import time
 from datetime import datetime
 from pathlib import Path
@@ -7,6 +11,13 @@ from pathlib import Path
 from flask import Flask, Response, jsonify, render_template, request
 
 from loop_runner import QUEUE_FILE, runner
+
+_SCAFFOLD_GENERATOR = Path(__file__).parent.parent / "ai_project_scaffold_generator.py"
+sys.path.insert(0, str(Path(__file__).parent.parent))
+from ai_project_scaffold_generator import generate_scaffold
+
+_scaffold_lock = threading.Lock()
+_scaffold_state: dict = {"running": False, "log": [], "result": None}
 
 app = Flask(__name__)
 
@@ -194,6 +205,63 @@ def stream():
 
     return Response(event_generator(), mimetype="text/event-stream",
                     headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
+
+
+@app.route("/api/scaffold", methods=["POST"])
+def scaffold_start():
+    body = request.get_json(silent=True) or {}
+    description = str(body.get("description", "")).strip()
+    folder_path = str(body.get("folder_path", "")).strip()
+    service_name = str(body.get("service_name", "")).strip()
+    tech_stack = str(body.get("tech_stack", "Streamlit")).strip()
+    provider = str(body.get("provider", "template")).strip()
+    api_key = str(body.get("api_key", "")).strip()
+
+    if not description:
+        return jsonify({"error": "description 필요"}), 400
+    if not folder_path:
+        return jsonify({"error": "folder_path 필요"}), 400
+
+    with _scaffold_lock:
+        if _scaffold_state["running"]:
+            return jsonify({"error": "이미 실행 중"}), 409
+        _scaffold_state["running"] = True
+        _scaffold_state["log"] = []
+        _scaffold_state["result"] = None
+
+    def _run():
+        buf = io.StringIO()
+        try:
+            with contextlib.redirect_stdout(buf):
+                result = generate_scaffold(
+                    description=description,
+                    folder_path=folder_path,
+                    service_name=service_name,
+                    tech_stack=tech_stack,
+                    api_key=api_key,
+                    provider=provider,
+                )
+        except Exception as e:
+            result = {"ok": False, "error": str(e)}
+        finally:
+            lines = [l for l in buf.getvalue().splitlines() if l.strip()]
+            with _scaffold_lock:
+                _scaffold_state["running"] = False
+                _scaffold_state["log"] = lines
+                _scaffold_state["result"] = result
+
+    threading.Thread(target=_run, daemon=True).start()
+    return jsonify({"started": True})
+
+
+@app.route("/api/scaffold/status")
+def scaffold_status():
+    with _scaffold_lock:
+        return jsonify({
+            "running": _scaffold_state["running"],
+            "log": list(_scaffold_state["log"]),
+            "result": _scaffold_state["result"],
+        })
 
 
 if __name__ == "__main__":

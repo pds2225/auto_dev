@@ -117,10 +117,90 @@
 
     /* 구분선 */
     hr { border: none; border-top: 1px solid #21262d; margin: 20px 0; }
+
+    /* 스캐폴드 폼 */
+    .sf-input {
+      width: 100%;
+      background: #0d1117;
+      border: 1px solid #30363d;
+      border-radius: 8px;
+      color: #e6edf3;
+      padding: 10px 14px;
+      font-size: 0.9rem;
+      font-family: inherit;
+    }
+    .sf-input:focus { outline: none; border-color: #58a6ff; }
+    .sf-input:disabled { opacity: 0.35; }
+    .sf-grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+    .sf-grid3 { display: grid; grid-template-columns: 1fr 2fr; gap: 10px; }
+    .sf-log {
+      display: none;
+      background: #0d1117;
+      border: 1px solid #21262d;
+      border-radius: 8px;
+      padding: 12px;
+      font-family: 'Cascadia Code','Consolas',monospace;
+      font-size: 0.78rem;
+      line-height: 1.6;
+      color: #8b949e;
+      max-height: 160px;
+      overflow-y: auto;
+      white-space: pre-wrap;
+      word-break: break-all;
+    }
+    .btn-primary {
+      flex: 1; padding: 10px;
+      background: #1a7f37; color: #fff;
+      border: none; border-radius: 8px;
+      cursor: pointer; font-size: 0.9rem; font-weight: 600;
+    }
+    .btn-primary:disabled { opacity: 0.4; cursor: default; }
+    .btn-outline {
+      flex: 1; padding: 10px;
+      background: transparent; color: #58a6ff;
+      border: 1px solid #58a6ff; border-radius: 8px;
+      cursor: pointer; font-size: 0.9rem; font-weight: 600;
+      display: none;
+    }
   </style>
 </head>
 <body>
   <h1>⚙ Auto Dev Loop</h1>
+
+  <!-- 스캐폴드 생성 -->
+  <div class="card">
+    <div class="section-title">스캐폴드 생성 <span id="sfStatus" style="color:#58a6ff;font-size:0.8rem"></span></div>
+    <div style="display:flex;flex-direction:column;gap:10px">
+      <textarea id="sfDesc" class="sf-input" rows="3"
+        placeholder="서비스 설명 (예: 월별 지출을 기록하고 카테고리별 분석 차트를 제공하는 가계부 앱)"></textarea>
+      <input id="sfPath" class="sf-input" type="text"
+        placeholder="생성 경로 (예: D:\my-new-project)" />
+      <div class="sf-grid2">
+        <input id="sfName" class="sf-input" type="text" placeholder="서비스명 (비우면 설명으로 자동 결정)" />
+        <select id="sfStack" class="sf-input">
+          <option value="Streamlit">Streamlit</option>
+          <option value="FastAPI">FastAPI</option>
+          <option value="Next.js">Next.js</option>
+          <option value="Python CLI">Python CLI</option>
+          <option value="기타">기타</option>
+        </select>
+      </div>
+      <div class="sf-grid3">
+        <select id="sfProvider" class="sf-input" onchange="toggleSfApiKey()">
+          <option value="template">템플릿 (API 없이)</option>
+          <option value="claude">Claude API</option>
+          <option value="openai">OpenAI API</option>
+        </select>
+        <input id="sfApiKey" class="sf-input" type="password"
+          placeholder="API Key (템플릿 모드는 불필요)" disabled />
+      </div>
+      <div style="display:flex;gap:10px">
+        <button id="sfBtn" class="btn-primary" onclick="startScaffold()">생성 시작</button>
+        <button id="sfLoopBtn" class="btn-outline" onclick="scaffoldThenLoop()">루프 시작 →</button>
+      </div>
+      <div id="sfLog" class="sf-log"></div>
+    </div>
+  </div>
 
   <!-- 경로 입력 -->
   <div class="card">
@@ -321,6 +401,112 @@
     pollState();
     pollTasks();
     pollQueue();
+
+    // ── 스캐폴드 ──────────────────────────────────────────
+    let _sfPollTimer = null;
+    let _sfLastResult = null;
+
+    function toggleSfApiKey() {
+      const prov = document.getElementById('sfProvider').value;
+      const key = document.getElementById('sfApiKey');
+      key.disabled = (prov === 'template');
+    }
+
+    function _sfLog(line, cls) {
+      const box = document.getElementById('sfLog');
+      box.style.display = 'block';
+      const d = document.createElement('div');
+      d.style.color = cls === 'ok' ? '#3fb950' : cls === 'err' ? '#ff7b72' : '#8b949e';
+      d.textContent = line;
+      box.appendChild(d);
+      box.scrollTop = box.scrollHeight;
+    }
+
+    async function startScaffold() {
+      const desc = document.getElementById('sfDesc').value.trim();
+      const path = document.getElementById('sfPath').value.trim();
+      if (!desc) { _sfLog('서비스 설명을 입력하세요.', 'err'); return; }
+      if (!path) { _sfLog('생성 경로를 입력하세요.', 'err'); return; }
+
+      document.getElementById('sfLog').innerHTML = '';
+      document.getElementById('sfLog').style.display = 'block';
+      document.getElementById('sfBtn').disabled = true;
+      document.getElementById('sfLoopBtn').style.display = 'none';
+      document.getElementById('sfStatus').textContent = '⏳ 생성 중...';
+      _sfLastResult = null;
+
+      const body = {
+        description: desc,
+        folder_path: path,
+        service_name: document.getElementById('sfName').value.trim(),
+        tech_stack: document.getElementById('sfStack').value,
+        provider: document.getElementById('sfProvider').value,
+        api_key: document.getElementById('sfApiKey').value.trim(),
+      };
+
+      try {
+        const res = await fetch('/api/scaffold', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(body),
+        });
+        const data = await res.json();
+        if (data.error) { _sfLog('❌ ' + data.error, 'err'); document.getElementById('sfBtn').disabled = false; return; }
+        _sfPollTimer = setInterval(_pollScaffold, 800);
+      } catch (e) {
+        _sfLog('❌ 서버 연결 오류', 'err');
+        document.getElementById('sfBtn').disabled = false;
+      }
+    }
+
+    async function _pollScaffold() {
+      try {
+        const res = await fetch('/api/scaffold/status');
+        const data = await res.json();
+
+        if (data.log && data.log.length) {
+          const box = document.getElementById('sfLog');
+          const rendered = box.children.length;
+          for (let i = rendered; i < data.log.length; i++) {
+            const l = data.log[i];
+            _sfLog(l, l.includes('[OK]') || l.includes('완료') ? 'ok' : l.includes('ERROR') || l.includes('실패') ? 'err' : '');
+          }
+        }
+
+        if (!data.running) {
+          clearInterval(_sfPollTimer);
+          document.getElementById('sfBtn').disabled = false;
+          const result = data.result;
+          _sfLastResult = result;
+          if (result && result.ok) {
+            document.getElementById('sfStatus').textContent = '✅ 완료';
+            _sfLog(`✅ ${result.service_name} — ${result.base_dir}`, 'ok');
+            document.getElementById('sfLoopBtn').style.display = 'flex';
+            document.getElementById('projectDir').value = result.base_dir;
+            saveProjectDirDraft(result.base_dir);
+          } else {
+            document.getElementById('sfStatus').textContent = '❌ 실패';
+            _sfLog('❌ ' + (result && result.error ? result.error : '알 수 없는 오류'), 'err');
+          }
+        }
+      } catch {}
+    }
+
+    function scaffoldThenLoop() {
+      if (!_sfLastResult || !_sfLastResult.ok) return;
+      const payload = { project_dir: _sfLastResult.base_dir };
+      fetch('/api/loop/toggle', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      }).then(r => r.json()).then(data => {
+        if (data.error) { appendLog('❌ ' + data.error); return; }
+        document.getElementById('projectDir').value = _sfLastResult.base_dir;
+        saveProjectDirDraft(_sfLastResult.base_dir);
+        appendLog('▶ 루프 시작됨 — ' + _sfLastResult.base_dir);
+        pollState();
+      }).catch(() => appendLog('❌ 서버 연결 오류'));
+    }
   </script>
 </body>
 </html>
