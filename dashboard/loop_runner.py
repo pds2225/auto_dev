@@ -22,6 +22,7 @@ QUEUE_FILE = Path(__file__).parent / "queue.json"
 DEFAULT_CLAUDE_TIMEOUT_SEC = 180
 DEFAULT_CODEX_RETRY_COUNT = 2
 TEST_TIMEOUT_SEC = 120
+TASK_FILE_CANDIDATES = ("TASK.md", "TASKS.md")
 BUILD_TAG = os.getenv(
     "AUTO_DEV_BUILD_TAG",
     datetime.fromtimestamp(Path(__file__).stat().st_mtime).strftime("%Y%m%d-%H%M%S"),
@@ -185,6 +186,17 @@ class LoopRunner:
         self._log_command(cmd, cwd)
         return subprocess.Popen(cmd, cwd=cwd, **kwargs)
 
+    def _get_task_file_path(self) -> Path:
+        project_root = Path(self.project_dir)
+        for name in TASK_FILE_CANDIDATES:
+            candidate = project_root / name
+            if candidate.exists():
+                return candidate
+        return project_root / TASK_FILE_CANDIDATES[0]
+
+    def _task_file_label(self) -> str:
+        return self._get_task_file_path().name
+
     def _get_active_section(self, text: str) -> str:
         match = re.search(r"^## Active\s*$", text, flags=re.MULTILINE)
         if not match:
@@ -231,9 +243,9 @@ class LoopRunner:
         }
 
     def _get_next_task_selection(self) -> dict[str, str] | None:
-        tasks_path = Path(self.project_dir) / "TASKS.md"
+        tasks_path = self._get_task_file_path()
         if not tasks_path.exists():
-            self._log("⚠ TASKS.md 파일이 없습니다.")
+            self._log(f"⚠ {tasks_path.name} 파일이 없습니다.")
             return None
         try:
             text = tasks_path.read_text(encoding="utf-8")
@@ -243,8 +255,8 @@ class LoopRunner:
                 return None
             current_day = ""
             first_entry: dict[str, str] | None = None
-            newest_generated_entry: dict[str, str] | None = None
-            newest_generated_id = -1
+            lowest_generated_entry: dict[str, str] | None = None
+            lowest_generated_id: int | None = None
             for line in active.splitlines():
                 day_match = re.match(r"^###\s+(.+)$", line.strip())
                 if day_match:
@@ -256,13 +268,15 @@ class LoopRunner:
                     generated_task_id = self._extract_generated_task_id(task)
                     if generated_task_id is None and "[TASK-" in task:
                         self._log(f"⚠ TASK ID 추출 실패: {task}")
-                    if generated_task_id is not None and generated_task_id >= newest_generated_id:
-                        newest_generated_id = generated_task_id
-                        newest_generated_entry = self._build_task_selection(
+                    if generated_task_id is not None and (
+                        lowest_generated_id is None or generated_task_id < lowest_generated_id
+                    ):
+                        lowest_generated_id = generated_task_id
+                        lowest_generated_entry = self._build_task_selection(
                             current_day,
                             task,
                             "generated",
-                            "newest_generated_pending",
+                            "lowest_generated_pending",
                         )
                     if first_entry is None:
                         first_entry = self._build_task_selection(
@@ -271,9 +285,9 @@ class LoopRunner:
                             "regular_pending",
                             "fallback_selected",
                         )
-            return newest_generated_entry or first_entry
+            return lowest_generated_entry or first_entry
         except Exception as e:
-            self._log(f"⚠ TASKS.md 읽기 실패: {e}")
+            self._log(f"⚠ {tasks_path.name} 읽기 실패: {e}")
             return None
 
     def _get_next_task_entry(self) -> tuple[str, str] | None:
@@ -287,7 +301,7 @@ class LoopRunner:
         return entry[0] if entry else None
 
     def _mark_task_done(self, task: str):
-        tasks_path = Path(self.project_dir) / "TASKS.md"
+        tasks_path = self._get_task_file_path()
         if not tasks_path.exists():
             return
         try:
@@ -299,7 +313,7 @@ class LoopRunner:
             updated = text.replace(active, updated_active, 1)
             tasks_path.write_text(updated, encoding="utf-8")
         except Exception as e:
-            self._log(f"⚠ TASKS.md 업데이트 실패: {e}")
+            self._log(f"⚠ {tasks_path.name} 업데이트 실패: {e}")
 
     def _read_prompt(self, prompt_file: Path) -> str:
         if prompt_file.exists():
@@ -530,17 +544,42 @@ class LoopRunner:
                 return sub
         return proj
 
+    def _find_test_targets(self) -> list[str]:
+        """pytest 대상으로 넘길 tests 경로 목록을 반환."""
+        proj = Path(self.project_dir)
+        direct_dir = self._find_test_dir()
+        direct_tests = direct_dir / "tests"
+        if direct_tests.is_dir():
+            return [os.path.relpath(direct_tests, proj)]
+
+        targets: list[Path] = []
+        try:
+            for tests_dir in proj.rglob("tests"):
+                if not tests_dir.is_dir():
+                    continue
+                if any(part in self._SKIP_DIRS for part in tests_dir.parts):
+                    continue
+                targets.append(tests_dir)
+        except Exception as e:
+            self._log(f"⚠ tests 탐색 실패: {e}")
+            return ["."]
+
+        if not targets:
+            return ["."]
+
+        ordered = sorted(
+            {path.resolve() for path in targets},
+            key=lambda path: (len(path.relative_to(proj).parts), str(path.relative_to(proj)).casefold()),
+        )
+        return [os.path.relpath(path, proj) for path in ordered]
+
     def _run_tests(self) -> tuple[bool, str]:
-        test_dir = self._find_test_dir()
         project_dir = Path(self.project_dir)
-        test_target = "."
-        tests_dir = test_dir / "tests"
-        if tests_dir.is_dir():
-            test_target = os.path.relpath(tests_dir, project_dir)
-        self._log(f"  📂 테스트 경로: {test_target}")
+        test_targets = self._find_test_targets()
+        self._log(f"  📂 테스트 경로: {', '.join(test_targets)}")
         try:
             result = self._run_project_command(
-                ["python", "-m", "pytest", test_target, "--tb=short", "-q"],
+                ["python", "-m", "pytest", *test_targets, "--tb=short", "-q"],
                 capture_output=True,
                 text=True,
                 timeout=TEST_TIMEOUT_SEC,
@@ -602,21 +641,21 @@ class LoopRunner:
         ]
 
     def _run_scaffold_if_needed(self) -> bool:
-        """TASKS.md가 없으면 프로젝트 상태에 따라 적절한 방법으로 생성."""
-        tasks_path = Path(self.project_dir) / "TASKS.md"
+        """TASK.md 또는 TASKS.md가 없으면 프로젝트 상태에 따라 적절한 방법으로 생성."""
+        tasks_path = self._get_task_file_path()
         if tasks_path.exists():
             return False
-        self._log("📋 TASKS.md 없음 — scaffold 생성 시작")
+        self._log(f"📋 {tasks_path.name} 없음 — scaffold 생성 시작")
         code_files = self._detect_code_files()
         if code_files:
-            self._log(f"  📂 기존 코드 {len(code_files)}개 감지 → 코드 분석 후 TASKS.md 생성")
+            self._log(f"  📂 기존 코드 {len(code_files)}개 감지 → 코드 분석 후 {tasks_path.name} 생성")
             return self._scaffold_from_code_analysis(code_files)
         self._log("  🌱 코드 파일 없음 → template provider scaffold 분기")
         return self._scaffold_from_template()
 
     def _scaffold_from_template(self) -> bool:
-        """빈 프로젝트: scaffold_generator 템플릿으로 TASKS.md 생성."""
-        tasks_path = Path(self.project_dir) / "TASKS.md"
+        """빈 프로젝트: scaffold_generator 템플릿으로 태스크 파일 생성."""
+        tasks_path = self._get_task_file_path()
         folder_name = Path(self.project_dir).name
         try:
             self._log(f"[SCAFFOLD] provider=template build_tag={BUILD_TAG}")
@@ -642,7 +681,7 @@ class LoopRunner:
             if tasks_path.exists():
                 self._log("✅ scaffold 자동 생성 완료")
                 return True
-            self._log("⚠ scaffold 생성 실패 — TASKS.md 없이 루프 시작 불가")
+            self._log(f"⚠ scaffold 생성 실패 — {tasks_path.name} 없이 루프 시작 불가")
             return False
         except subprocess.TimeoutExpired:
             self._log("⚠ scaffold 생성 시간 초과 (120초)")
@@ -727,12 +766,13 @@ class LoopRunner:
         return "\n".join(sections)
 
     def _write_existing_safe_tasks(self, summary: str) -> bool:
-        tasks_path = Path(self.project_dir) / "TASKS.md"
+        tasks_path = self._get_task_file_path()
         proj_name = Path(self.project_dir).name
+        task_doc_name = tasks_path.name
         summary_lines = [line for line in summary.splitlines() if line.startswith("- file: ")][:5]
         focus = "\n".join(summary_lines) or "- file: existing codebase"
         doc = (
-            f"# TASKS.md — {proj_name} / Based on: Existing Safe Fallback\n\n"
+            f"# {task_doc_name} — {proj_name} / Based on: Existing Safe Fallback\n\n"
             f"Codex 분석 실패 시 기존 코드 구조 요약 기반으로 생성됨.\n\n"
             f"## Analysis Summary\n\n{focus}\n\n"
             f"## Task Details\n\n"
@@ -770,19 +810,19 @@ class LoopRunner:
             f"- [ ] [TASK-05] Safe incremental cleanup\n"
         )
         tasks_path.write_text(doc, encoding="utf-8")
-        self._log("✅ existing-safe fallback TASKS.md 생성 완료")
+        self._log(f"✅ existing-safe fallback {tasks_path.name} 생성 완료")
         return True
 
     def _scaffold_from_code_analysis(self, code_files: list[Path]) -> bool:
-        """기존 코드 분석 → Codex가 실제 코드 기반 TASKS.md 직접 생성."""
-        tasks_path = Path(self.project_dir) / "TASKS.md"
+        """기존 코드 분석 → Codex가 실제 코드 기반 태스크 파일 직접 생성."""
+        tasks_path = self._get_task_file_path()
         proj = Path(self.project_dir)
         summary = self.summarize_codebase(code_files)
 
         prompt = (
             f"아래는 '{proj.name}' 프로젝트의 구조 요약이다. 전체 파일 원문이 아니라 요약만 제공된다.\n\n"
             + summary
-            + f"\n\n위 요약을 분석해서 이 프로젝트에 실제로 필요한 개선·구현 작업을 TASKS.md로 작성해라.\n\n"
+            + f"\n\n위 요약을 분석해서 이 프로젝트에 실제로 필요한 개선·구현 작업을 {tasks_path.name}로 작성해라.\n\n"
             f"[규칙]\n"
             f"1. 이미 잘 구현된 기능은 태스크로 만들지 않는다\n"
             f"2. 실제로 부족하거나 개선이 필요한 부분만 5~7개 태스크로 만든다\n"
@@ -791,7 +831,7 @@ class LoopRunner:
             f"4. 파일 마지막에 반드시 아래 형식의 Active 섹션 포함:\n\n"
             f"## Active\n\n### Auto Dev Queue\n\n"
             f"- [ ] [TASK-01] 태스크 제목\n- [ ] [TASK-02] 태스크 제목\n...\n\n"
-            f"TASKS.md 파일을 {self.project_dir} 에 저장해라."
+            f"{tasks_path.name} 파일을 {self.project_dir} 에 저장해라."
         )
 
         self._log(f"🔍 코드 분석 중... build_tag={BUILD_TAG}")
@@ -799,7 +839,7 @@ class LoopRunner:
         _, code, _ = self._run_codex_with_retries(prompt, stage_label="코드 분석")
 
         if tasks_path.exists():
-            self._log("✅ 코드 분석 기반 TASKS.md 생성 완료")
+            self._log(f"✅ 코드 분석 기반 {tasks_path.name} 생성 완료")
             return True
         self._log("⚠ Codex 분석 실패 — existing-safe fallback 시도")
         if self._write_existing_safe_tasks(summary):
@@ -992,9 +1032,9 @@ def run_self_tests():
         runner.project_dir = tmp
         selection = runner._get_next_task_selection()
         assert selection is not None
-        assert selection["selected_task_id"] == "TASK-02"
+        assert selection["selected_task_id"] == "TASK-01"
         assert selection["selected_task_type"] == "generated"
-        assert selection["selection_reason"] == "newest_generated_pending"
+        assert selection["selection_reason"] == "lowest_generated_pending"
 
     with tempfile.TemporaryDirectory() as tmp:
         tasks_path = Path(tmp) / "TASKS.md"
@@ -1017,9 +1057,9 @@ def run_self_tests():
         runner.project_dir = tmp
         selection = runner._get_next_task_selection()
         assert selection is not None
-        assert selection["selected_task_id"] == "TASK-31"
+        assert selection["selected_task_id"] == "TASK-30"
         assert selection["selected_task_type"] == "generated"
-        assert selection["selection_reason"] == "newest_generated_pending"
+        assert selection["selection_reason"] == "lowest_generated_pending"
 
     with tempfile.TemporaryDirectory() as tmp:
         tasks_path = Path(tmp) / "TASKS.md"

@@ -185,15 +185,16 @@
           <option value="기타">기타</option>
         </select>
       </div>
-      <div class="sf-grid3">
-        <select id="sfProvider" class="sf-input" onchange="toggleSfApiKey()">
-          <option value="template">템플릿 (API 없이)</option>
-          <option value="claude">Claude API</option>
-          <option value="openai">OpenAI API</option>
-        </select>
-        <input id="sfApiKey" class="sf-input" type="password"
-          placeholder="API Key (템플릿 모드는 불필요)" disabled />
-      </div>
+        <div class="sf-grid3">
+          <select id="sfProvider" class="sf-input" onchange="toggleSfApiKey()">
+            <option value="template">템플릿 (API 없이)</option>
+            <option value="claude">Claude API</option>
+            <option value="openai">OpenAI API</option>
+          </select>
+          <div class="sf-input" style="display:flex;align-items:center;color:#8b949e;background:#161b22;border-style:dashed;">
+            API 키는 환경변수에서 자동 사용
+          </div>
+        </div>
       <div style="display:flex;gap:10px">
         <button id="sfBtn" class="btn-primary" onclick="startScaffold()">생성 시작</button>
         <button id="sfLoopBtn" class="btn-outline" onclick="scaffoldThenLoop()">루프 시작 →</button>
@@ -233,6 +234,30 @@
     <div class="task-note">선택 기준: generated TASK-xx 우선, 없으면 Active의 첫 일반 미완료를 fallback 선택.</div>
   </div>
 
+  <!-- 프로젝트 상태 -->
+  <div class="card">
+    <div class="section-title">프로젝트 상태 <span id="snapshotPath" style="color:#58a6ff"></span></div>
+    <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin-bottom:12px">
+      <div style="background:#0d1117;border:1px solid #21262d;border-radius:8px;padding:12px">
+        <div style="font-size:0.72rem;color:#8b949e;margin-bottom:6px">브랜치</div>
+        <div id="snapshotBranch" style="font-size:0.95rem;color:#e6edf3">—</div>
+      </div>
+      <div style="background:#0d1117;border:1px solid #21262d;border-radius:8px;padding:12px">
+        <div style="font-size:0.72rem;color:#8b949e;margin-bottom:6px">HEAD</div>
+        <div id="snapshotHead" style="font-size:0.95rem;color:#e6edf3">—</div>
+      </div>
+      <div style="background:#0d1117;border:1px solid #21262d;border-radius:8px;padding:12px">
+        <div style="font-size:0.72rem;color:#8b949e;margin-bottom:6px">원격</div>
+        <div id="snapshotRemote" style="font-size:0.95rem;color:#e6edf3">—</div>
+      </div>
+      <div style="background:#0d1117;border:1px solid #21262d;border-radius:8px;padding:12px">
+        <div style="font-size:0.72rem;color:#8b949e;margin-bottom:6px">작업트리</div>
+        <div id="snapshotStatus" style="font-size:0.95rem;color:#e6edf3">—</div>
+      </div>
+    </div>
+    <div id="snapshotNote" style="font-size:0.82rem;color:#8b949e;line-height:1.6">선택된 프로젝트 기준으로 Git 상태를 불러옵니다.</div>
+  </div>
+
   <!-- 태스크 목록 -->
   <div class="card">
     <div class="section-title">태스크 진행률 <span id="taskProgress" style="color:#58a6ff"></span></div>
@@ -252,6 +277,12 @@
     const taskMeta = document.getElementById('taskMeta');
     const logBox = document.getElementById('logBox');
     const dirInput = document.getElementById('projectDir');
+    const snapshotPath = document.getElementById('snapshotPath');
+    const snapshotBranch = document.getElementById('snapshotBranch');
+    const snapshotHead = document.getElementById('snapshotHead');
+    const snapshotRemote = document.getElementById('snapshotRemote');
+    const snapshotStatus = document.getElementById('snapshotStatus');
+    const snapshotNote = document.getElementById('snapshotNote');
     const PROJECT_DIR_DRAFT_KEY = 'auto-dev-project-dir-draft';
     let projectDirDirty = false;
 
@@ -300,6 +331,23 @@
         return localStorage.getItem(PROJECT_DIR_DRAFT_KEY) || '';
       } catch {
         return '';
+      }
+    }
+
+    async function pollSnapshot() {
+      try {
+        const repoDir = dirInput.value.trim();
+        const qs = repoDir ? `?repo_dir=${encodeURIComponent(repoDir)}` : '';
+        const res = await fetch(`/api/snapshot${qs}`);
+        const data = await res.json();
+        snapshotPath.textContent = data.repo_dir ? `(${data.repo_dir})` : '';
+        snapshotBranch.textContent = data.branch || '—';
+        snapshotHead.textContent = data.head || '—';
+        snapshotRemote.textContent = data.remote ? '연결됨' : '—';
+        snapshotStatus.textContent = data.status || '—';
+        snapshotNote.textContent = data.note || 'Git 상태 정보를 불러오지 못했습니다.';
+      } catch {
+        snapshotNote.textContent = 'Git 상태 정보를 불러오지 못했습니다.';
       }
     }
 
@@ -357,7 +405,7 @@
       try {
         const res = await fetch('/api/tasks');
         const data = await res.json();
-        if (data.total === 0) { taskList.innerHTML = '<span style="color:#8b949e">TASKS.md 없음</span>'; return; }
+        if (data.total === 0) { taskList.innerHTML = '<span style="color:#8b949e">TASK 파일 없음</span>'; return; }
         taskProgress.textContent = `${data.done.length} / ${data.total} 완료`;
         const currentTask = document.getElementById('taskText').textContent;
         taskList.innerHTML = [
@@ -396,9 +444,11 @@
     }
 
     setInterval(pollState, 1500);
+    setInterval(pollSnapshot, 3000);
     setInterval(pollTasks, 3000);
     setInterval(pollQueue, 3000);
     pollState();
+    pollSnapshot();
     pollTasks();
     pollQueue();
 
@@ -407,9 +457,7 @@
     let _sfLastResult = null;
 
     function toggleSfApiKey() {
-      const prov = document.getElementById('sfProvider').value;
-      const key = document.getElementById('sfApiKey');
-      key.disabled = (prov === 'template');
+      return;
     }
 
     function _sfLog(line, cls) {
@@ -441,7 +489,6 @@
         service_name: document.getElementById('sfName').value.trim(),
         tech_stack: document.getElementById('sfStack').value,
         provider: document.getElementById('sfProvider').value,
-        api_key: document.getElementById('sfApiKey').value.trim(),
       };
 
       try {

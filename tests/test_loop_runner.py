@@ -4,10 +4,6 @@ import tempfile
 import textwrap
 from pathlib import Path
 
-TEST_TEMP_ROOT = Path(__file__).parent / ".tmp"
-TEST_TEMP_ROOT.mkdir(parents=True, exist_ok=True)
-tempfile.tempdir = str(TEST_TEMP_ROOT)
-
 sys.path.insert(0, str(Path(__file__).parent.parent / "dashboard"))
 
 from loop_runner import DEFAULT_CLAUDE_TIMEOUT_SEC, LoopRunner, get_claude_timeout_sec
@@ -47,9 +43,9 @@ def test_select_newest_generated_task():
         r.project_dir = tmp
         sel = r._get_next_task_selection()
         assert sel is not None
-        assert sel["selected_task_id"] == "TASK-02"
+        assert sel["selected_task_id"] == "TASK-01"
         assert sel["selected_task_type"] == "generated"
-        assert sel["selection_reason"] == "newest_generated_pending"
+        assert sel["selection_reason"] == "lowest_generated_pending"
 
 
 def test_select_newest_generated_among_mixed():
@@ -67,7 +63,8 @@ def test_select_newest_generated_among_mixed():
         r = LoopRunner()
         r.project_dir = tmp
         sel = r._get_next_task_selection()
-        assert sel["selected_task_id"] == "TASK-31"
+        assert sel["selected_task_id"] == "TASK-30"
+        assert sel["selection_reason"] == "lowest_generated_pending"
 
 
 def test_select_fallback_when_no_generated():
@@ -89,6 +86,48 @@ def test_select_fallback_when_no_generated():
         assert sel["selected_task_id"] == ""
         assert sel["selected_task_type"] == "regular_pending"
         assert sel["selection_reason"] == "fallback_selected"
+
+
+def test_select_returns_task_md_when_present():
+    with tempfile.TemporaryDirectory() as tmp:
+        (Path(tmp) / "TASK.md").write_text(textwrap.dedent("""\
+            # Tasks
+
+            ## Active
+
+            ### Day 1
+            - [ ] [TASK-01] task from task md
+        """), encoding="utf-8")
+        r = LoopRunner()
+        r.project_dir = tmp
+        sel = r._get_next_task_selection()
+        assert sel is not None
+        assert sel["selected_task_id"] == "TASK-01"
+
+
+def test_select_prefers_task_md_over_tasks_md():
+    with tempfile.TemporaryDirectory() as tmp:
+        (Path(tmp) / "TASK.md").write_text(textwrap.dedent("""\
+            # Tasks
+
+            ## Active
+
+            ### Day 1
+            - [ ] [TASK-01] task md first
+        """), encoding="utf-8")
+        (Path(tmp) / "TASKS.md").write_text(textwrap.dedent("""\
+            # Tasks
+
+            ## Active
+
+            ### Day 1
+            - [ ] [TASK-09] tasks md fallback
+        """), encoding="utf-8")
+        r = LoopRunner()
+        r.project_dir = tmp
+        sel = r._get_next_task_selection()
+        assert sel is not None
+        assert sel["selected_task_id"] == "TASK-01"
 
 
 def test_select_returns_none_no_tasks_md():
@@ -119,6 +158,18 @@ def test_select_returns_none_all_done():
 
 
 # ── _mark_task_done ───────────────────────────────────────────────────────────
+
+def test_mark_task_done_prefers_task_md():
+    with tempfile.TemporaryDirectory() as tmp:
+        p = Path(tmp) / "TASK.md"
+        p.write_text("# Tasks\n\n## Active\n\n- [ ] [TASK-01] 할 일\n", encoding="utf-8")
+        r = LoopRunner()
+        r.project_dir = tmp
+        r._mark_task_done("[TASK-01] 할 일")
+        result = p.read_text(encoding="utf-8")
+        assert "- [x] [TASK-01] 할 일" in result
+        assert "- [ ] [TASK-01] 할 일" not in result
+
 
 def test_mark_task_done():
     with tempfile.TemporaryDirectory() as tmp:
@@ -223,7 +274,7 @@ def test_scaffold_code_analysis_falls_back_to_existing_safe_when_claude_fails():
         r = FallbackRunner()
         r.project_dir = tmp
         assert r._scaffold_from_code_analysis([app_py]) is True
-        tasks_text = (Path(tmp) / "TASKS.md").read_text(encoding="utf-8")
+        tasks_text = r._get_task_file_path().read_text(encoding="utf-8")
         assert "Based on: Existing Safe Fallback" in tasks_text
         assert "[TASK-01] Existing behavior snapshot" in tasks_text
 
@@ -245,6 +296,30 @@ def test_find_test_dir_fallback_to_root():
         r = LoopRunner()
         r.project_dir = tmp
         assert r._find_test_dir() == Path(tmp)
+
+
+def test_find_test_targets_prefers_direct_tests_dir():
+    with tempfile.TemporaryDirectory() as tmp:
+        sub = Path(tmp) / "my-app"
+        sub.mkdir()
+        (sub / "tests").mkdir()
+        r = LoopRunner()
+        r.project_dir = tmp
+        assert r._find_test_targets() == [os.path.relpath(sub / "tests", Path(tmp))]
+
+
+def test_find_test_targets_discovers_nested_service_tests():
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        (root / "services" / "alpha" / "tests").mkdir(parents=True)
+        (root / "services" / "beta" / "tests").mkdir(parents=True)
+        (root / "node_modules" / "pkg" / "tests").mkdir(parents=True)
+        r = LoopRunner()
+        r.project_dir = tmp
+        assert r._find_test_targets() == [
+            os.path.join("services", "alpha", "tests"),
+            os.path.join("services", "beta", "tests"),
+        ]
 
 
 # ── 타임아웃 시 루프 중단 ─────────────────────────────────────────────────────

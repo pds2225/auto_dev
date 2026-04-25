@@ -11,6 +11,7 @@ from pathlib import Path
 from flask import Flask, Response, jsonify, render_template, request
 
 from loop_runner import QUEUE_FILE, runner
+from project_snapshot import get_project_snapshot, get_snapshot_note
 
 _SCAFFOLD_GENERATOR = Path(__file__).parent.parent / "ai_project_scaffold_generator.py"
 sys.path.insert(0, str(Path(__file__).parent.parent))
@@ -167,7 +168,7 @@ def queue_remove():
 def tasks():
     done, pending = [], []
     if runner.project_dir:
-        tasks_path = Path(runner.project_dir) / "TASKS.md"
+        tasks_path = runner._get_task_file_path()
         if tasks_path.exists():
             try:
                 text = tasks_path.read_text(encoding="utf-8")
@@ -262,6 +263,14 @@ def scaffold_status():
             "log": list(_scaffold_state["log"]),
             "result": _scaffold_state["result"],
         })
+
+
+@app.route("/api/snapshot")
+def snapshot():
+    repo_dir = request.args.get("repo_dir") or runner.project_dir or str(Path(__file__).parent.parent)
+    snapshot_data = get_project_snapshot(repo_dir)
+    snapshot_data["note"] = get_snapshot_note(snapshot_data)
+    return jsonify(snapshot_data)
 
 
 if __name__ == "__main__":

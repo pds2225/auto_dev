@@ -5,4 +5,8 @@ __pycache__/
 .env
 dashboard/loop_state.json
 dashboard/runner.log
+dashboard/streamlit_stdout.log
+dashboard/streamlit_stderr.log
+dashboard/streamlit_*_stdout.log
+dashboard/streamlit_*_stderr.log
 tests/.tmp/

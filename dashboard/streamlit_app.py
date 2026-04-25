@@ -12,6 +12,7 @@ import streamlit as st
 
 sys.path.insert(0, str(Path(__file__).parent))
 from loop_runner import QUEUE_FILE, runner
+from project_snapshot import get_project_snapshot, get_snapshot_note
 
 st.set_page_config(
     page_title="Auto Dev 대시보드",
@@ -42,7 +43,7 @@ def _get_tasks() -> tuple[list[str], list[str]]:
     done, pending = [], []
     if not runner.project_dir:
         return done, pending
-    tasks_path = Path(runner.project_dir) / "TASKS.md"
+    tasks_path = runner._get_task_file_path()
     if not tasks_path.exists():
         return done, pending
     try:
@@ -131,6 +132,9 @@ with st.sidebar:
 # ── 메인 영역 ─────────────────────────────────────────────────────────────────
 
 st.title("🤖 Auto Dev 대시보드")
+selected_project_dir = project_dir_input.strip() or runner.project_dir
+snapshot_target = Path(selected_project_dir) if selected_project_dir else Path(__file__).resolve().parent.parent
+snapshot = get_project_snapshot(snapshot_target)
 
 STAGE_LABELS = {
     "idle": "⬜ 대기",
@@ -142,7 +146,7 @@ STAGE_LABELS = {
 }
 
 # 상태 행
-c_status, c_task, c_stage = st.columns(3)
+c_status, c_task, c_stage, c_repo = st.columns(4)
 with c_status:
     if runner.running:
         st.success("● 실행 중")
@@ -152,11 +156,31 @@ with c_task:
     st.metric("현재 태스크", runner.current_task_id or "—")
 with c_stage:
     st.metric("단계", STAGE_LABELS.get(runner.current_stage, runner.current_stage))
+with c_repo:
+    st.metric("브랜치", snapshot["branch"] or "—")
 
 if runner.current_task:
     st.info(f"📌 {runner.current_task}")
 
 st.divider()
+
+st.subheader("📦 프로젝트 상태")
+repo_cols = st.columns(4)
+with repo_cols[0]:
+    st.metric("HEAD", snapshot["head"] or "—")
+with repo_cols[1]:
+    st.metric("원격", "연결됨" if snapshot["remote"] else "—")
+with repo_cols[2]:
+    st.metric("작업트리", "변경 있음" if snapshot["dirty"] else "clean")
+with repo_cols[3]:
+    st.metric("Git 상태", snapshot["status"] or "—")
+
+if snapshot["remote"]:
+    st.caption(get_snapshot_note(snapshot))
+elif snapshot["error"]:
+    st.warning(get_snapshot_note(snapshot))
+else:
+    st.caption(get_snapshot_note(snapshot))
 
 # 태스크 진행
 col_tasks, col_logs = st.columns([1, 2])
@@ -179,7 +203,7 @@ with col_tasks:
             for t in done_tasks:
                 st.markdown(f"- ~~{t}~~")
     else:
-        st.caption("TASKS.md 없음 또는 태스크 없음")
+        st.caption(f"{runner._get_task_file_path().name} 없음 또는 태스크 없음")
 
 with col_logs:
     st.subheader("📜 실행 로그")
@@ -193,3 +217,91 @@ with col_logs:
 if runner.running:
     time.sleep(1)
     st.rerun()
+
+# ── 기존 streamlit_app.py 맨 아래에 추가 ─────────────────────
+
+st.divider()
+st.subheader("🛠️ 도구")
+
+# 탭으로 분리
+tab_gen, tab_sched = st.tabs(["📝 태스크 자동 생성", "⏰ 예약 설정"])
+
+# ── 탭 1: 자동 태스크 생성 ────────────────────────────────────
+with tab_gen:
+    st.markdown("**AI가 할 일을 자동으로 만들어줍니다**")
+    
+    task_desc = st.text_area(
+        "새 태스크 설명",
+        placeholder="예: 대시보드에 다크모드 토글 버튼 추가",
+        height=80,
+    )
+    
+    c1, c2 = st.columns([1, 1])
+    with c1:
+        task_stack = st.selectbox("기술스택", ["Streamlit", "FastAPI", "Python", "기타"], index=0)
+    with c2:
+        task_skill = st.selectbox("스킬 태그", ["frontend-ui", "backend-api", "debugging", "test"], index=0)
+    
+    if st.button("✨ 태스크 생성 및 TASK.md에 추가", use_container_width=True):
+        if task_desc.strip():
+            try:
+                from task_generator import generate_task_via_template, preview_task
+                
+                # 미리보기
+                preview = preview_task(task_desc)
+                st.json(preview)
+                
+                # 실제 추가
+                new_id = generate_task_via_template(
+                    description=task_desc,
+                    project_dir=runner.project_dir or "D:/auto_dev",
+                    tech_stack=task_stack,
+                )
+                st.success(f"✅ {new_id}가 TASK.md에 추가되었습니다!")
+                st.rerun()
+            except Exception as e:
+                st.error(f"추가 실패: {e}")
+        else:
+            st.warning("설명을 입력하세요")
+
+# ── 탭 2: 예약 설정 (TASK-31) ─────────────────────────────────
+with tab_sched:
+    st.markdown("**루프를 자동으로 실행할 시간을 설정합니다**")
+    
+    try:
+        from task_scheduler import get_schedule, save_schedule_from_ui
+        
+        cfg = get_schedule()
+        
+        sched_enabled = st.toggle("예약 실행 활성화", value=cfg.get("enabled", False))
+        sched_time = st.time_input("실행 시간", value=datetime.strptime(cfg.get("time", "09:00"), "%H:%M").time())
+        sched_project = st.text_input("대상 프로젝트 경로", value=cfg.get("project_dir", runner.project_dir or "D:/auto_dev"))
+        
+        st.markdown("**실행 요일**")
+        days_cols = st.columns(7)
+        day_names = ["월", "화", "수", "목", "금", "토", "일"]
+        selected_days = []
+        for i, col in enumerate(days_cols):
+            with col:
+                if st.checkbox(day_names[i], value=i in cfg.get("days", [0,1,2,3,4])):
+                    selected_days.append(i)
+        
+        if st.button("💾 예약 저장", use_container_width=True):
+            save_schedule_from_ui(
+                enabled=sched_enabled,
+                time_str=sched_time.strftime("%H:%M"),
+                days=selected_days,
+                project_dir=sched_project,
+            )
+            st.success("예약 설정이 저장되었습니다!")
+            
+            # Windows Task Scheduler 등록 안내
+            if os.name == "nt":
+                st.info("""
+                💡 **Windows에서 부팅 시 자동 실행하려면:**
+                1. `Win + R` → `taskschd.msc`
+                2. 작업 만들기 → `python streamlit_app.py` 등록
+                3. 또는 `run_scheduler.bat`를 시작 프로그램에 추가
+                """)
+    except Exception as e:
+        st.error(f"스케줄러 로드 실패: {e}")
