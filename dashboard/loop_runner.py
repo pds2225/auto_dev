@@ -23,6 +23,7 @@ DEFAULT_CLAUDE_TIMEOUT_SEC = 180
 DEFAULT_CODEX_RETRY_COUNT = 2
 TEST_TIMEOUT_SEC = 120
 TASK_FILE_CANDIDATES = ("TASK.md", "TASKS.md")
+CONTINUE_ON_TEST_FAILURE = os.environ.get("AUTO_DEV_CONTINUE_ON_FAILURE", "true").lower() == "true"
 BUILD_TAG = os.getenv(
     "AUTO_DEV_BUILD_TAG",
     datetime.fromtimestamp(Path(__file__).stat().st_mtime).strftime("%Y%m%d-%H%M%S"),
@@ -265,6 +266,8 @@ class LoopRunner:
                 task_match = re.match(r"^- \[ \] (.+)$", line.strip())
                 if task_match:
                     task = task_match.group(1).strip()
+                    # TASK-XX: 콜론 형식 → [TASK-XX] 형식으로 정규화
+                    task = re.sub(r"^(TASK-\d+):\s*", r"[\1] ", task)
                     generated_task_id = self._extract_generated_task_id(task)
                     if generated_task_id is None and "[TASK-" in task:
                         self._log(f"⚠ TASK ID 추출 실패: {task}")
@@ -310,6 +313,11 @@ class LoopRunner:
             if not active:
                 return
             updated_active = active.replace(f"- [ ] {task}", f"- [x] {task}", 1)
+            # [TASK-XX] 정규화 형식인 경우 원본 TASK-XX: 콜론 형식도 시도
+            if updated_active == active:
+                colon_task = re.sub(r"^\[TASK-(\d+)\]\s*", r"TASK-\1: ", task)
+                if colon_task != task:
+                    updated_active = active.replace(f"- [ ] {colon_task}", f"- [x] {colon_task}", 1)
             updated = text.replace(active, updated_active, 1)
             tasks_path.write_text(updated, encoding="utf-8")
         except Exception as e:
@@ -575,13 +583,8 @@ class LoopRunner:
         return proj
 
     def _find_test_targets(self) -> list[str]:
-        """pytest 대상으로 넘길 tests 경로 목록을 반환."""
+        """pytest 대상으로 넘길 tests 경로 목록을 반환. 여러 tests/ 디렉토리 모두 수집."""
         proj = Path(self.project_dir)
-        direct_dir = self._find_test_dir()
-        direct_tests = direct_dir / "tests"
-        if direct_tests.is_dir():
-            return [os.path.relpath(direct_tests, proj)]
-
         targets: list[Path] = []
         try:
             for tests_dir in proj.rglob("tests"):
@@ -994,6 +997,13 @@ class LoopRunner:
                     self._mark_task_done(task)
                     self._log(f"  → [{task}] 완료 처리")
                 else:
+                    if CONTINUE_ON_TEST_FAILURE:
+                        self._log(
+                            "⚠ 재테스트 실패 — AUTO_DEV_CONTINUE_ON_FAILURE=true 이므로 다음 태스크로 진행"
+                        )
+                        self._mark_task_done(task)
+                        self._log(f"  → [{task}] 실패 후 완료 처리")
+                        continue
                     self.current_stage = "error"
                     self._log("⚠ 재테스트도 실패. 루프 일시 중지 — 수동 확인 필요")
                     break
@@ -1182,6 +1192,59 @@ def run_self_tests():
         assert runner.timeout_calls == 2
         assert "수동 확인 필요" in "\n".join(list(runner.log_queue.queue))
         assert "- [ ] [TASK-03] timeout-prone task" in tasks_path.read_text(encoding="utf-8")
+
+    with tempfile.TemporaryDirectory() as tmp:
+        tasks_path = Path(tmp) / "TASKS.md"
+        tasks_path.write_text(
+            textwrap.dedent(
+                """\
+                # Tasks
+
+                ## Active
+
+                ### Night Queue
+                - [ ] [TASK-01] failing task
+                - [ ] [TASK-02] next task
+                """
+            ),
+            encoding="utf-8",
+        )
+
+        class ContinueAfterFailureRunner(LoopRunner):
+            def __init__(self):
+                super().__init__()
+                self.test_calls = 0
+
+            def _install_deps(self):
+                return
+
+            def _read_prompt(self, prompt_file: Path) -> str:
+                return "prompt"
+
+            def _run_codex(
+                self, prompt: str, extra_context: str = "", *, bypass_sandbox: bool = False
+            ) -> tuple[str, int, bool]:
+                return "", 0, False
+
+            def _run_tests(self) -> tuple[bool, str]:
+                self.test_calls += 1
+                return False, "0 passed"
+
+        original_continue_on_failure = CONTINUE_ON_TEST_FAILURE
+        try:
+            globals()["CONTINUE_ON_TEST_FAILURE"] = True
+            runner = ContinueAfterFailureRunner()
+            runner.project_dir = tmp
+            runner.running = True
+            runner._run()
+        finally:
+            globals()["CONTINUE_ON_TEST_FAILURE"] = original_continue_on_failure
+
+        result = tasks_path.read_text(encoding="utf-8")
+        assert runner.current_stage == "done"
+        assert "- [x] [TASK-01] failing task" in result
+        assert "- [x] [TASK-02] next task" in result
+        assert "AUTO_DEV_CONTINUE_ON_FAILURE=true" in "\n".join(list(runner.log_queue.queue))
 
     # ── _mark_task_done ───────────────────────────────────────────────────────
     with tempfile.TemporaryDirectory() as tmp:
