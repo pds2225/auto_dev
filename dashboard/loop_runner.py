@@ -536,26 +536,37 @@ class LoopRunner:
         return self._run_codex(prompt, extra_context)
 
     def _find_test_dir(self) -> Path:
-        """tests/ 폴더가 있는 가장 적합한 디렉토리를 반환 (2단계 깊이까지 탐색)."""
+        """tests/ 폴더가 있는 가장 적합한 루트를 반환."""
         proj = Path(self.project_dir)
-        # TASKS.md에 실행 명령 힌트가 있으면 우선 사용
-        tasks_path = proj / "TASKS.md"
-        if tasks_path.exists():
-            try:
-                text = tasks_path.read_text(encoding="utf-8")
-                import re as _re
-                m = _re.search(r"cd\s+([\w./\\-]+)\s*&&.*pytest", text)
-                if m:
-                    candidate = proj / m.group(1).strip()
-                    if candidate.is_dir():
-                        return candidate
-            except Exception:
-                pass
-        # 1단계: 직접 하위 디렉토리
+        # 1순위: TASKS.md의 'cd <path> && pytest' 힌트
+        for fname in ("TASKS.md", "TASK.md"):
+            tasks_path = proj / fname
+            if tasks_path.exists():
+                try:
+                    text = tasks_path.read_text(encoding="utf-8")
+                    import re as _re
+                    m = _re.search(r"cd\s+([\w./\\-]+)\s*&&.*pytest", text)
+                    if m:
+                        candidate = proj / m.group(1).strip()
+                        if candidate.is_dir():
+                            return candidate
+                except Exception:
+                    pass
+        # 2순위: 루트 바로 아래 tests/
+        if (proj / "tests").is_dir():
+            return proj
+        # 3순위: 1단계 서브디렉토리 (omni-sync/ 등)
         for sub in sorted(proj.iterdir()):
             if sub.is_dir() and (sub / "tests").is_dir():
                 return sub
-        # 2단계: 하위의 하위 디렉토리
+        # 4순위: services/*/tests, apps/*/tests 패턴 (marketgate 등)
+        for parent_name in ("services", "apps"):
+            parent = proj / parent_name
+            if parent.is_dir():
+                for sub in sorted(parent.iterdir()):
+                    if sub.is_dir() and (sub / "tests").is_dir():
+                        return sub
+        # 5순위: 2단계 전체 탐색
         for sub in sorted(proj.iterdir()):
             if sub.is_dir():
                 for sub2 in sorted(sub.iterdir()):
