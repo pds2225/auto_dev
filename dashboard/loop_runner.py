@@ -536,12 +536,31 @@ class LoopRunner:
         return self._run_codex(prompt, extra_context)
 
     def _find_test_dir(self) -> Path:
-        """tests/ 폴더가 있는 가장 적합한 디렉토리를 반환."""
+        """tests/ 폴더가 있는 가장 적합한 디렉토리를 반환 (2단계 깊이까지 탐색)."""
         proj = Path(self.project_dir)
-        # 서브디렉토리 중 tests/ 가진 것 우선 (예: omni-sync/)
+        # TASKS.md에 실행 명령 힌트가 있으면 우선 사용
+        tasks_path = proj / "TASKS.md"
+        if tasks_path.exists():
+            try:
+                text = tasks_path.read_text(encoding="utf-8")
+                import re as _re
+                m = _re.search(r"cd\s+([\w./\\-]+)\s*&&.*pytest", text)
+                if m:
+                    candidate = proj / m.group(1).strip()
+                    if candidate.is_dir():
+                        return candidate
+            except Exception:
+                pass
+        # 1단계: 직접 하위 디렉토리
         for sub in sorted(proj.iterdir()):
             if sub.is_dir() and (sub / "tests").is_dir():
                 return sub
+        # 2단계: 하위의 하위 디렉토리
+        for sub in sorted(proj.iterdir()):
+            if sub.is_dir():
+                for sub2 in sorted(sub.iterdir()):
+                    if sub2.is_dir() and (sub2 / "tests").is_dir():
+                        return sub2
         return proj
 
     def _find_test_targets(self) -> list[str]:
