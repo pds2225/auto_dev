@@ -10,3 +10,5 @@ dashboard/streamlit_stderr.log
 dashboard/streamlit_*_stdout.log
 dashboard/streamlit_*_stderr.log
 tests/.tmp/
+
+.git-auto-backup.log
