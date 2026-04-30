@@ -74,9 +74,37 @@ def write_file(path: Path, content: str) -> None:
 
 
 def extract_json(raw: str) -> dict:
-    if "```" in raw:
-        raw = re.sub(r"```[a-z]*\n?", "", raw).replace("```", "").strip()
-    return json.loads(raw)
+    """마크다운 코드 블록 및 불필요한 텍스트를 제거하고 JSON을 추출합니다.
+
+    Raises:
+        ValueError: 입력이 비어있을 경우
+        json.JSONDecodeError: 유효한 JSON을 찾을 수 없을 경우
+    """
+    if not raw or not raw.strip():
+        raise ValueError("입력된 데이터가 비어 있습니다.")
+
+    # 1) 마크다운 코드 블록 내의 JSON 추출 시도
+    match = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", raw, re.DOTALL)
+    if match:
+        target = match.group(1)
+    else:
+        # 2) 코드 블록이 없으면 첫 '{'와 마지막 '}' 사이 추출
+        start = raw.find("{")
+        end = raw.rfind("}")
+        if start != -1 and end != -1 and end > start:
+            target = raw[start : end + 1]
+        else:
+            target = raw.strip()
+
+    try:
+        return json.loads(target)
+    except json.JSONDecodeError as e:
+        # 디버깅을 위해 실패 시 원본 데이터의 일부를 출력
+        preview = raw[:500].replace("\n", " ")
+        print(f"[!] JSON 파싱 실패: {e}")
+        print(f"[!] 추출 대상: {target[:200]}")
+        print(f"[!] 원본 미리보기: {preview}...")
+        raise
 
 
 from task_writer import (
