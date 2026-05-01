@@ -1,4 +1,4 @@
-# AutoDev Git Auto Backup (Stash-Pull-Pop Safe Mode)
+﻿# AutoDev Git Auto Backup (Stash-Pull-Pop Safe Mode)
 # 5-minute interval: detect -> stash -> pull -> pop -> commit -> push
 # Run: PowerShell -File scripts/git_auto_backup.ps1
 
@@ -17,7 +17,7 @@ Write-Log "=== AutoDev Git Auto Backup Started (Stash-Pull-Pop Mode) ==="
 Write-Log "Repository: $repoPath"
 Write-Log "Interval: $($intervalSeconds / 60) minutes"
 Write-Log "Log file: $logFile"
-Write-Log "Stop: Task Manager > PowerShell PID 종료"
+Write-Log "Stop: Task Manager > PowerShell PID 醫낅즺"
 Write-Log ""
 
 while ($true) {
@@ -46,6 +46,7 @@ while ($true) {
             $timestamp = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
 
             # 1. Stash (include untracked)
+            if (Test-Path "$epoPath\.git-auto-backup.log") { Remove-Item "$epoPath\.git-auto-backup.log" -Force }
             git stash push -m "auto-backup-stash-$timestamp" --include-untracked 2>$null
             if ($LASTEXITCODE -ne 0) { throw "git stash failed" }
             Write-Log "[STASH] Local changes saved."
@@ -95,3 +96,4 @@ while ($true) {
 
     Start-Sleep -Seconds $intervalSeconds
 }
+
