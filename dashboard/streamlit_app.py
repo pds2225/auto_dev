@@ -65,10 +65,84 @@ def _get_tasks() -> tuple[list[str], list[str]]:
     return done, pending
 
 
+def _get_task_entries() -> list[dict]:
+    """태스크 원본 라인 + 상태 + 표시 텍스트를 반환"""
+    import re
+    entries = []
+    if not runner.project_dir:
+        return entries
+    tasks_path = runner._get_task_file_path()
+    if not tasks_path.exists():
+        return entries
+    try:
+        text = tasks_path.read_text(encoding="utf-8")
+        active = runner._get_active_section(text)
+        for line in active.splitlines():
+            stripped = line.strip()
+            m = re.match(r"^- \[x\] (.+)$", stripped)
+            if m:
+                entries.append({"raw": line, "text": m.group(1).strip(), "done": True})
+                continue
+            m = re.match(r"^- \[ \] ~~.+~~.*$", stripped)
+            if m:
+                continue
+            m = re.match(r"^- \[ \] (.+)$", stripped)
+            if m:
+                entries.append({"raw": line, "text": m.group(1).strip(), "done": False})
+    except Exception:
+        pass
+    return entries
+
+
+def _save_task_entries(entries: list[dict]) -> None:
+    """entries를 기반으로 TASKS.md의 Active 섹션을 재생성"""
+    import re
+    if not runner.project_dir:
+        return
+    tasks_path = runner._get_task_file_path()
+    if not tasks_path.exists():
+        return
+    full_text = tasks_path.read_text(encoding="utf-8")
+
+    # Active 섹션 바운드 찾기
+    match = re.search(r"^## Active\s*$", full_text, flags=re.MULTILINE)
+    if not match:
+        return
+    start = match.end()
+    next_section = re.search(r"^##\s+", full_text[start:], flags=re.MULTILINE)
+    end = start + next_section.start() if next_section else len(full_text)
+
+    # 새 Active 섹션 빌드
+    new_lines = []
+    for e in entries:
+        prefix = "- [x] " if e["done"] else "- [ ] "
+        new_lines.append(prefix + e["text"])
+    new_active = "\n".join(new_lines)
+
+    new_text = full_text[:start] + "\n\n" + new_active + "\n\n" + full_text[end:]
+    tasks_path.write_text(new_text, encoding="utf-8")
+
+
+def _delete_task_by_index(idx: int) -> None:
+    entries = _get_task_entries()
+    if 0 <= idx < len(entries):
+        entries.pop(idx)
+        _save_task_entries(entries)
+
+
+def _update_task_by_index(idx: int, new_text: str) -> None:
+    entries = _get_task_entries()
+    if 0 <= idx < len(entries):
+        entries[idx]["text"] = new_text.strip()
+        _save_task_entries(entries)
+
+
 # ── 로그를 세션 상태에 드레인 ────────────────────────────────────────────────
 
 if "logs" not in st.session_state:
     st.session_state.logs = []
+if "edit_task_idx" not in st.session_state:
+    st.session_state.edit_task_idx = None
 
 while not runner.log_queue.empty():
     st.session_state.logs.append(runner.log_queue.get())
@@ -195,8 +269,34 @@ with col_tasks:
 
         if pending_tasks:
             st.markdown("**⬜ 대기**")
-            for t in pending_tasks:
-                st.markdown(f"- {t}")
+            entries = _get_task_entries()
+            pending_entries = [e for e in entries if not e["done"]]
+            for i, e in enumerate(pending_entries):
+                col1, col2, col3 = st.columns([6, 1, 1])
+                with col1:
+                    st.markdown(f"- {e['text']}")
+                with col2:
+                    if st.button("✏️", key=f"edit_{i}"):
+                        st.session_state.edit_task_idx = i
+                        st.session_state.edit_task_text = e["text"]
+                        st.rerun()
+                with col3:
+                    if st.button("🗑️", key=f"del_{i}"):
+                        _delete_task_by_index(i)
+                        st.rerun()
+
+                if st.session_state.edit_task_idx == i:
+                    new_text = st.text_area("수정", value=st.session_state.edit_task_text, key=f"ta_{i}")
+                    c1, c2 = st.columns([1, 1])
+                    with c1:
+                        if st.button("💾 저장", key=f"save_{i}"):
+                            _update_task_by_index(i, new_text)
+                            st.session_state.edit_task_idx = None
+                            st.rerun()
+                    with c2:
+                        if st.button("❌ 취소", key=f"cancel_{i}"):
+                            st.session_state.edit_task_idx = None
+                            st.rerun()
 
         if done_tasks:
             st.markdown("**✅ 완료**")
