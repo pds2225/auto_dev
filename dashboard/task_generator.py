@@ -17,6 +17,7 @@ from ai_project_scaffold_generator import (
     get_next_task_id,
     render_appended_task_template,
     slugify,
+    write_tasks_document,
     write_tasks_with_fallback,
 )
 
@@ -83,7 +84,7 @@ def generate_task_via_template(
         # TASK.md가 없으면 기본 구조 생성 후 추가
         prd = fallback_prd(description, proj.name)
         der = fallback_derivatives(prd, tech_stack)
-        write_tasks_with_fallback(proj, prd, der, "v0.1")
+        write_tasks_document(proj, prd, der, "v0.1")
 
     return next_id
 
