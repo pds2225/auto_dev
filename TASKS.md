@@ -86,12 +86,12 @@ TASKS.md
 - [x] [TASK-57] 밤샘 루프 돌리기 모드 추가
 - [x] [TASK-58] 밤샘 루프 돌리기 모드 추가
 
-- [ ] [TASK-59] task추가-루프시작-gitpush 반복할수있는 기능개발
+- [x] [TASK-59] task추가-루프시작-gitpush 반복할수있는 기능개발
   - 원본 태스크: TASK-59
   - 의존성: 없음
   - 검증: pytest 또는 수동 실행
 
-- [ ] [TASK-60] task추가-루프시작-gitpush 반복할수있는 기능개발
+- [x] [TASK-60] task추가-루프시작-gitpush 반복할수있는 기능개발
   - 원본 태스크: TASK-60
   - 의존성: 없음
   - 검증: pytest 또는 수동 실행
