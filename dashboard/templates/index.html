@@ -334,12 +334,22 @@
       }
     }
 
-    async function pollSnapshot() {
+    function pathExistsError(data) {
+      return data && data.error === 'repo_dir not found';
+    }
+
+    async function pollSnapshot(retryWithoutDraft = true) {
       try {
         const repoDir = dirInput.value.trim();
         const qs = repoDir ? `?repo_dir=${encodeURIComponent(repoDir)}` : '';
         const res = await fetch(`/api/snapshot${qs}`);
         const data = await res.json();
+        if (repoDir && retryWithoutDraft && pathExistsError(data)) {
+          dirInput.value = '';
+          projectDirDirty = false;
+          saveProjectDirDraft('');
+          return pollSnapshot(false);
+        }
         snapshotPath.textContent = data.repo_dir ? `(${data.repo_dir})` : '';
         snapshotBranch.textContent = data.branch || '—';
         snapshotHead.textContent = data.head || '—';
@@ -354,7 +364,6 @@
     const initialProjectDirDraft = loadProjectDirDraft();
     if (initialProjectDirDraft) {
       dirInput.value = initialProjectDirDraft;
-      projectDirDirty = true;
     }
 
     dirInput.addEventListener('input', () => {
