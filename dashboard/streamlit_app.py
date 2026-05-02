@@ -4,8 +4,10 @@ Auto Dev 대시보드 — Streamlit 버전 (server.py 대체)
 from __future__ import annotations
 
 import json
+import os
 import sys
 import time
+from datetime import datetime
 from pathlib import Path
 
 import streamlit as st
@@ -336,28 +338,38 @@ with tab_gen:
         height=80,
     )
     
-    c1, c2 = st.columns([1, 1])
+    c1, c2, c3 = st.columns([2, 2, 2])
     with c1:
         task_stack = st.selectbox("기술스택", ["Streamlit", "FastAPI", "Python", "기타"], index=0)
     with c2:
         task_skill = st.selectbox("스킬 태그", ["frontend-ui", "backend-api", "debugging", "test"], index=0)
+    with c3:
+        ai_decompose = st.toggle("AI 분해 모드", value=True, help="켜면 AI가 설명을 여러 세부 태스크로 자동 분해합니다")
     
     if st.button("✨ 태스크 생성 및 TASK.md에 추가", use_container_width=True):
         if task_desc.strip():
             try:
-                from task_generator import generate_task_via_template, preview_task
-                
-                # 미리보기
-                preview = preview_task(task_desc)
-                st.json(preview)
-                
-                # 실제 추가
-                new_id = generate_task_via_template(
-                    description=task_desc,
-                    project_dir=runner.project_dir or "D:/auto_dev",
-                    tech_stack=task_stack,
-                )
-                st.success(f"✅ {new_id}가 TASK.md에 추가되었습니다!")
+                project_dir = runner.project_dir or "D:/auto_dev"
+                if ai_decompose:
+                    from task_generator import decompose_tasks_with_ai, batch_append_tasks
+                    
+                    with st.spinner("AI가 태스크를 분해하는 중..."):
+                        tasks = decompose_tasks_with_ai(task_desc, task_stack)
+                    
+                    st.json({"생성된 태스크": [t["title"] for t in tasks]})
+                    
+                    new_ids = batch_append_tasks(tasks, project_dir)
+                    st.success(f"✅ {len(new_ids)}개 태스크({new_ids[0]}~{new_ids[-1]})가 TASK.md에 추가되었습니다!")
+                else:
+                    from task_generator import generate_task_via_template, preview_task
+                    preview = preview_task(task_desc)
+                    st.json(preview)
+                    new_id = generate_task_via_template(
+                        description=task_desc,
+                        project_dir=project_dir,
+                        tech_stack=task_stack,
+                    )
+                    st.success(f"✅ {new_id}가 TASK.md에 추가되었습니다!")
                 st.rerun()
             except Exception as e:
                 st.error(f"추가 실패: {e}")

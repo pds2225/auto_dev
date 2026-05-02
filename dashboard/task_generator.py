@@ -68,23 +68,36 @@ def generate_task_via_template(
     next_id = get_next_task_id(source_text)
     task = _build_task_from_description(description, next_id)
 
-    # TASK.md에 추가
-    if task_md.exists():
-        text = task_md.read_text(encoding="utf-8")
+    # TASK.md 또는 TASKS.md에 추가
+    target_file = task_md if task_md.exists() else (tasks_md if tasks_md.exists() else None)
+
+    if target_file:
+        text = target_file.read_text(encoding="utf-8")
         appended = render_appended_task_template(task, next_id)
-        # Active 섹션 찾아서 추가
-        active_match = re.search(r"^(## Active\s*)$", text, re.MULTILINE)
+        # Active 섹션 찾아서 끝에 추가
+        active_match = re.search(r"^## Active\s*$", text, re.MULTILINE)
         if active_match:
-            insert_pos = active_match.end()
-            updated = text[:insert_pos] + "\n\n" + appended + text[insert_pos:]
+            start = active_match.end()
+            next_section = re.search(r"^##\s+", text[start:], re.MULTILINE)
+            end = start + next_section.start() if next_section else len(text)
+            active_body = text[start:end]
+            updated = text[:start] + active_body.rstrip() + "\n\n" + appended + "\n" + text[end:]
         else:
             updated = text.rstrip() + "\n\n## Active\n\n" + appended
-        task_md.write_text(updated, encoding="utf-8")
+        target_file.write_text(updated, encoding="utf-8")
     else:
-        # TASK.md가 없으면 기본 구조 생성 후 추가
-        prd = fallback_prd(description, proj.name)
-        der = fallback_derivatives(prd, tech_stack)
-        write_tasks_document(proj, prd, der, "v0.1")
+        # TASK.md/TASKS.md 둘 다 없으면: 사용자 입력 기반의 최소 TASK.md 생성
+        # (fallback_derivatives의 하드코딩 태스크 대신 사용자가 입력한 내용을 반영)
+        doc = (
+            f"# TASK.md — {proj.name}\n\n"
+            f"## Active\n\n"
+            f"### Auto Dev Queue\n\n"
+            f"- [ ] [{next_id}] {task['title']}\n"
+            f"  - 스킬태그: {task['skill_tag']}\n"
+            f"  - 예상 소요: {task['effort']}\n"
+            f"  - 검증: {task['verification']}\n"
+        )
+        task_md.write_text(doc, encoding="utf-8")
 
     return next_id
 
@@ -112,6 +125,133 @@ def generate_task_via_ai(
 def preview_task(description: str) -> dict:
     """TASK.md에 추가하기 전에 미리보기"""
     return _build_task_from_description(description)
+
+
+def decompose_tasks_with_ai(description: str, tech_stack: str = "Streamlit") -> list[dict]:
+    """OpenAI/Claude API를 통해 사용자 설명을 여러 개발 태스크로 분해"""
+    prompt = f"""당신은 소프트웨어 개발 태스크 분석 전문가입니다.
+다음 기능 설명을 {tech_stack} 기술스택으로 구현하기 위해 필요한 개발 태스크들을 분해해주세요.
+
+설명: {description}
+
+각 태스크는 다음 필드를 포함해야 합니다:
+- id: 임시 TASK-01, TASK-02, ...
+- title: 태스크 제목 (50자 이내)
+- skill_tag: frontend-ui, backend-api, debugging, test, data-integration 중 하나
+- effort: 예상 소요 시간 (예: "1-2시간", "2-4시간", "30분")
+- subtasks: 세부 작업 목록 (문자열 배열, 2-4개)
+- acceptance_criteria: 수락 기준 (문자열 배열, 2-4개)
+- verification: 검증 방법 (문자열)
+
+반드시 아래 JSON 형식으로만 응답하세요. 추가 설명 없이 순수 JSON만 반환하세요.
+{{
+  "tasks": [
+    {{
+      "id": "TASK-01",
+      "title": "...",
+      "skill_tag": "...",
+      "effort": "...",
+      "subtasks": ["..."],
+      "acceptance_criteria": ["..."],
+      "verification": "..."
+    }}
+  ]
+}}"""
+
+    # OpenAI 먼저 시도
+    openai_key = os.environ.get("OPENAI_API_KEY", "").strip()
+    if openai_key:
+        try:
+            import openai
+            client = openai.OpenAI(api_key=openai_key)
+            resp = client.chat.completions.create(
+                model="gpt-4o-mini",
+                response_format={"type": "json_object"},
+                messages=[
+                    {"role": "system", "content": "당신은 소프트웨어 개발 태스크 분석 전문가입니다. JSON으로만 응답하세요."},
+                    {"role": "user", "content": prompt},
+                ],
+            )
+            raw = resp.choices[0].message.content
+            data = json.loads(raw)
+            tasks = data.get("tasks", [])
+            if tasks:
+                return tasks
+        except Exception as e:
+            print(f"[경고] OpenAI 태스크 분해 실패: {e}")
+
+    # Claude fallback
+    anthropic_key = os.environ.get("ANTHROPIC_API_KEY", "").strip()
+    if anthropic_key:
+        try:
+            import anthropic
+            client = anthropic.Anthropic(api_key=anthropic_key)
+            msg = client.messages.create(
+                model="claude-3-5-sonnet-20241022",
+                max_tokens=4096,
+                messages=[{"role": "user", "content": prompt}],
+            )
+            raw = msg.content[0].text
+            data = json.loads(raw)
+            tasks = data.get("tasks", [])
+            if tasks:
+                return tasks
+        except Exception as e:
+            print(f"[경고] Claude 태스크 분해 실패: {e}")
+
+    raise RuntimeError("AI API를 통해 태스크 분해에 실패했습니다. API 키와 네트워크를 확인하세요.")
+
+
+def _extract_task_number(task_id: str) -> int:
+    m = re.search(r"TASK-(\d+)", task_id)
+    return int(m.group(1)) if m else 0
+
+
+def batch_append_tasks(tasks: list[dict], project_dir: str) -> list[str]:
+    """여러 태스크를 TASK.md 또는 TASKS.md의 Active 섹션에 일괄 추가"""
+    proj = Path(project_dir)
+    task_md = proj / "TASK.md"
+    tasks_md = proj / "TASKS.md"
+
+    target_file = task_md if task_md.exists() else (tasks_md if tasks_md.exists() else None)
+
+    # 기존 파일에서 다음 ID 결정
+    source_text = ""
+    if target_file:
+        source_text = target_file.read_text(encoding="utf-8")
+    next_id_num = _extract_task_number(get_next_task_id(source_text))
+
+    appended_lines = []
+    for i, task in enumerate(tasks):
+        new_id_num = next_id_num + i
+        new_id = f"TASK-{new_id_num:02d}"
+        task["id"] = new_id
+        appended_lines.append(render_appended_task_template(task, new_id))
+
+    appended = "\n\n".join(appended_lines)
+
+    if target_file:
+        text = target_file.read_text(encoding="utf-8")
+        active_match = re.search(r"^## Active\s*$", text, re.MULTILINE)
+        if active_match:
+            start = active_match.end()
+            next_section = re.search(r"^##\s+", text[start:], re.MULTILINE)
+            end = start + next_section.start() if next_section else len(text)
+            active_body = text[start:end]
+            updated = text[:start] + active_body.rstrip() + "\n\n" + appended + "\n" + text[end:]
+        else:
+            updated = text.rstrip() + "\n\n## Active\n\n" + appended
+        target_file.write_text(updated, encoding="utf-8")
+    else:
+        doc = (
+            f"# TASK.md — {proj.name}\n\n"
+            f"## Active\n\n"
+            f"### Auto Dev Queue\n\n"
+            f"{appended}\n"
+        )
+        task_md.write_text(doc, encoding="utf-8")
+
+    return [f"TASK-{next_id_num + i:02d}" for i in range(len(tasks))]
 
 
 # ── 셀프 테스트 ─────────────────────────────────────────────
