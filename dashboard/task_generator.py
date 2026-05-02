@@ -8,6 +8,13 @@ import sys
 from datetime import date
 from pathlib import Path
 
+# .env 파일에서 환경변수 로드 (있을 경우)
+try:
+    from dotenv import load_dotenv
+    load_dotenv(Path(__file__).parent / ".env")
+except ImportError:
+    pass
+
 # 기존 스캐폴드 생성기의 함수 재활용
 sys.path.insert(0, str(Path(__file__).parent.parent))
 from ai_project_scaffold_generator import (
