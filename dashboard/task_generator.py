@@ -202,6 +202,18 @@ def decompose_tasks_with_ai(description: str, tech_stack: str = "Streamlit") -> 
     raise RuntimeError("AI API를 통해 태스크 분해에 실패했습니다. API 키와 네트워크를 확인하세요.")
 
 
+def decompose_tasks_with_fallback(description: str, tech_stack: str = "Streamlit") -> tuple[list[dict], str]:
+    """AI 분해를 시도하되 실패하면 입력 설명 기반 단일 태스크로 fallback."""
+    try:
+        tasks = decompose_tasks_with_ai(description, tech_stack)
+        if tasks:
+            return tasks, "ai"
+    except Exception as exc:
+        print(f"[경고] AI 태스크 분해 실패, 템플릿 fallback 사용: {exc}")
+
+    return [_build_task_from_description(description)], "template-fallback"
+
+
 def _extract_task_number(task_id: str) -> int:
     m = re.search(r"TASK-(\d+)", task_id)
     return int(m.group(1)) if m else 0

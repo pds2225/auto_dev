@@ -351,15 +351,19 @@ with tab_gen:
             try:
                 project_dir = runner.project_dir or "D:/auto_dev"
                 if ai_decompose:
-                    from task_generator import decompose_tasks_with_ai, batch_append_tasks
+                    from task_generator import decompose_tasks_with_fallback, batch_append_tasks
                     
                     with st.spinner("AI가 태스크를 분해하는 중..."):
-                        tasks = decompose_tasks_with_ai(task_desc, task_stack)
+                        tasks, task_source = decompose_tasks_with_fallback(task_desc, task_stack)
                     
                     st.json({"생성된 태스크": [t["title"] for t in tasks]})
                     
                     new_ids = batch_append_tasks(tasks, project_dir)
-                    st.success(f"✅ {len(new_ids)}개 태스크({new_ids[0]}~{new_ids[-1]})가 TASK.md에 추가되었습니다!")
+                    if task_source == "ai":
+                        st.success(f"✅ {len(new_ids)}개 태스크({new_ids[0]}~{new_ids[-1]})가 TASK.md에 추가되었습니다!")
+                    else:
+                        st.warning("AI 분해에 실패해 입력 설명 기반 단일 태스크로 추가했습니다.")
+                        st.success(f"✅ {new_ids[0]}가 TASK.md에 추가되었습니다!")
                 else:
                     from task_generator import generate_task_via_template, preview_task
                     preview = preview_task(task_desc)
