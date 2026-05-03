@@ -58,7 +58,7 @@ while ($true) {
             $behind = git rev-list --count HEAD..origin/main 2>$null
             if ($behind -gt 0) {
                 Write-Log "[PULL] origin/main is $behind commit(s) ahead. Pulling..."
-                git pull origin main --no-rebase --quiet 2>$null
+                git pull origin main --no-rebase --no-edit --quiet 2>$null
                 if ($LASTEXITCODE -ne 0) {
                     Write-Log "[ERROR] git pull failed (conflict?). Manual fix required."
                 } else {
