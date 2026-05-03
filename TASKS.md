@@ -96,7 +96,7 @@ TASKS.md
   - 의존성: 없음
   - 검증: pytest 또는 수동 실행
 
-- [ ] [TASK-61] task추가-루프시작-gitpush 반복할수있는 기능개발
+- [x] [TASK-61] task추가-루프시작-gitpush 반복할수있는 기능개발
   - 원본 태스크: TASK-61
   - 의존성: 없음
   - 검증: pytest 또는 수동 실행

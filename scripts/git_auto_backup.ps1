@@ -1,9 +1,9 @@
-﻿# AutoDev Git Auto Backup (Stash-Pull-Pop Safe Mode)
-# 5-minute interval: detect -> stash -> pull -> pop -> commit -> push
+# AutoDev Git Auto Backup (Simple & Robust Mode)
+# 5-minute interval: detect -> commit -> pull -> push
 # Run: PowerShell -File scripts/git_auto_backup.ps1
 
 $repoPath = "D:\auto_dev"
-$logFile = "D:\auto_dev\.git-auto-backup.log"
+$logFile = "$env:TEMP\git-auto-backup-autodev.log"
 $intervalSeconds = 300  # 5 minutes
 
 function Write-Log($msg) {
@@ -13,11 +13,11 @@ function Write-Log($msg) {
 }
 
 Set-Location $repoPath
-Write-Log "=== AutoDev Git Auto Backup Started (Stash-Pull-Pop Mode) ==="
+Write-Log "=== AutoDev Git Auto Backup Started ==="
 Write-Log "Repository: $repoPath"
 Write-Log "Interval: $($intervalSeconds / 60) minutes"
 Write-Log "Log file: $logFile"
-Write-Log "Stop: Task Manager > PowerShell PID 醫낅즺"
+Write-Log "Stop: Task Manager > PowerShell PID 종료"
 Write-Log ""
 
 while ($true) {
@@ -45,50 +45,34 @@ while ($true) {
             Write-Log "[BACKUP] $changeCount changed file(s) detected."
             $timestamp = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
 
-            # 1. Stash (include untracked)
-            if (Test-Path "$epoPath\.git-auto-backup.log") { Remove-Item "$epoPath\.git-auto-backup.log" -Force }
-            git stash push -m "auto-backup-stash-$timestamp" --include-untracked 2>$null
-            if ($LASTEXITCODE -ne 0) { throw "git stash failed" }
-            Write-Log "[STASH] Local changes saved."
+            # Commit all local changes first
+            git add -A 2>$null
+            git commit -m "auto-backup: $timestamp" 2>$null
+            if ($LASTEXITCODE -ne 0) {
+                Write-Log "[WARN] Commit skipped (possibly nothing new after add)."
+            } else {
+                Write-Log "[COMMIT] Local changes committed."
+            }
 
-            # 2. Pull (merge, no rebase)
+            # Pull latest from remote (merge strategy)
             $behind = git rev-list --count HEAD..origin/main 2>$null
             if ($behind -gt 0) {
                 Write-Log "[PULL] origin/main is $behind commit(s) ahead. Pulling..."
-                git pull origin main --quiet 2>$null
+                git pull origin main --no-rebase --quiet 2>$null
                 if ($LASTEXITCODE -ne 0) {
-                    Write-Log "[ERROR] git pull failed. Restoring stash and stopping."
-                    git stash pop 2>$null
-                    exit 1
+                    Write-Log "[ERROR] git pull failed (conflict?). Manual fix required."
+                } else {
+                    Write-Log "[PULL] Synced with origin/main."
                 }
-                Write-Log "[PULL] Synced with origin/main."
             }
 
-            # 3. Stash Pop (restore local changes)
-            git stash pop 2>$null
-            if ($LASTEXITCODE -ne 0) {
-                Write-Log "[ERROR] git stash pop failed (conflict?). Manual fix required."
-                exit 1
-            }
-            Write-Log "[POP] Stash restored."
-
-            # 4. Conflict check
-            $conflicts = git diff --name-only --diff-filter=U 2>$null
-            if ($conflicts) {
-                Write-Log "[CONFLICT] Conflict detected in: $($conflicts -join ', ')"
-                Write-Log "[STOP] Auto-backup stopped. Resolve conflicts and restart."
-                exit 1
-            }
-
-            # 5. Add + Commit + Push
-            git add -A 2>$null
-            git commit -m "auto-backup: $timestamp" 2>$null
-            if ($LASTEXITCODE -ne 0) { throw "git commit failed" }
-
+            # Push
             git push origin main 2>$null
-            if ($LASTEXITCODE -ne 0) { throw "git push failed" }
-
-            Write-Log "[DONE] Backup pushed to origin/main."
+            if ($LASTEXITCODE -ne 0) {
+                Write-Log "[ERROR] git push failed."
+            } else {
+                Write-Log "[DONE] Backup pushed to origin/main."
+            }
         }
     } catch {
         Write-Log "[ERROR] $_"
@@ -96,4 +80,3 @@ while ($true) {
 
     Start-Sleep -Seconds $intervalSeconds
 }
-
