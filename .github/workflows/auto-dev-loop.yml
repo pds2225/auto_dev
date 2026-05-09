@@ -27,44 +27,125 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
+      # ── 1. 소스 체크아웃 ─────────────────────────────────────────────────
       - name: Checkout
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
+      # ── 2. Python 설정 ────────────────────────────────────────────────────
       - name: Setup Python
         uses: actions/setup-python@v5
         with:
           python-version: '3.11'
 
+      # ── 3. 사전 점검 (Preflight Check) ───────────────────────────────────
+      # Secret 누락, 파일 없음, 문법 오류 등을 코드 실행 전에 감지합니다.
+      - name: Preflight Check
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          AUTO_DEV_PAT: ${{ secrets.AUTO_DEV_PAT }}
+        run: |
+          echo ""
+          echo "════════════════════════════════════════════════════════"
+          echo "[PRECHECK] Auto Dev Loop 사전 점검"
+          echo "════════════════════════════════════════════════════════"
+          FAIL=0
+
+          # ── AI API Key 검사 ───────────────────────────────────────
+          if [ -z "$OPENAI_API_KEY" ] && [ -z "$ANTHROPIC_API_KEY" ]; then
+            echo "[PRECHECK] ERROR: AI API Key 없음 — 다음 중 하나 이상 필요"
+            echo "[PRECHECK]   Secret 이름: OPENAI_API_KEY 또는 ANTHROPIC_API_KEY"
+            echo "[PRECHECK]   등록 경로: GitHub → Settings → Secrets and variables → Actions"
+            FAIL=1
+          else
+            [ -n "$OPENAI_API_KEY" ]    && echo "[PRECHECK] ✓ OPENAI_API_KEY 설정됨"
+            [ -n "$ANTHROPIC_API_KEY" ] && echo "[PRECHECK] ✓ ANTHROPIC_API_KEY 설정됨"
+          fi
+
+          # ── PR 토큰 검사 ──────────────────────────────────────────
+          if [ -n "$AUTO_DEV_PAT" ]; then
+            echo "[PRECHECK] ✓ AUTO_DEV_PAT 설정됨 (PR 생성 우선 사용)"
+          else
+            echo "[PRECHECK] INFO: AUTO_DEV_PAT 없음 → github.token 사용"
+            echo "[PRECHECK]   ※ PR 생성 권한 오류 발생 시 해결 방법:"
+            echo "[PRECHECK]     방법 1: GitHub Settings → Actions → General"
+            echo "[PRECHECK]             → Allow GitHub Actions to create and approve pull requests 활성화"
+            echo "[PRECHECK]     방법 2: AUTO_DEV_PAT Secret 등록"
+            echo "[PRECHECK]             (repo + workflow 권한 Personal Access Token)"
+          fi
+
+          # ── 핵심 파일 존재 확인 ───────────────────────────────────
+          echo "[PRECHECK] 파일 존재 확인..."
+          for f in TASKS.md dashboard/streamlit_app.py scripts/run_auto_dev_once.py requirements.txt; do
+            if [ -f "$f" ]; then
+              echo "[PRECHECK] ✓ $f"
+            else
+              echo "[PRECHECK] WARN: $f 없음"
+            fi
+          done
+
+          # ── 실행 스크립트 문법 검사 ───────────────────────────────
+          echo "[PRECHECK] scripts/run_auto_dev_once.py 문법 검사..."
+          if python -m py_compile scripts/run_auto_dev_once.py 2>&1; then
+            echo "[PRECHECK] ✓ scripts/run_auto_dev_once.py 문법 정상"
+          else
+            echo "[PRECHECK] ERROR: scripts/run_auto_dev_once.py 문법 오류 → 실행 불가"
+            FAIL=1
+          fi
+
+          # ── 환경 정보 출력 ────────────────────────────────────────
+          echo "[PRECHECK] 저장소: ${GITHUB_REPOSITORY}"
+          echo "[PRECHECK] 브랜치: ${GITHUB_REF_NAME}"
+          echo "[PRECHECK] 목표:   ${{ github.event.inputs.goal }}"
+          echo "[PRECHECK] 모드:   ${{ github.event.inputs.mode }}"
+          echo "════════════════════════════════════════════════════════"
+
+          if [ "$FAIL" = "1" ]; then
+            echo "[PRECHECK] FAILED — 위 오류를 해결 후 재실행하세요."
+            exit 1
+          fi
+          echo "[PRECHECK] SUCCESS — 모든 사전 점검 통과"
+
+      # ── 4. 의존성 설치 ────────────────────────────────────────────────────
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
+      # ── 5. Auto Dev 실행 (one-shot) ───────────────────────────────────────
       - name: Run auto-dev (one-shot)
         env:
           GOAL: ${{ github.event.inputs.goal }}
           MODE: ${{ github.event.inputs.mode }}
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ secrets.AUTO_DEV_PAT || secrets.GITHUB_TOKEN }}
           GITHUB_REPOSITORY: ${{ github.repository }}
         run: python scripts/run_auto_dev_once.py
 
+      # ── 6. 변경사항 확인 ──────────────────────────────────────────────────
       - name: Check for changes
         id: changes
         run: |
+          echo ""
+          echo "════════════════════════════════════════════════════════"
+          echo "[GIT] 변경사항 확인"
+          echo "════════════════════════════════════════════════════════"
           if git diff --quiet && git diff --staged --quiet; then
             echo "changed=false" >> "$GITHUB_OUTPUT"
-            echo "No file changes detected."
+            echo "[GIT] 변경된 파일 없음"
+            echo "[GIT] → AI가 변경이 필요 없다고 판단하거나, 수정안이 검증에서 거부되었습니다."
           else
             echo "changed=true" >> "$GITHUB_OUTPUT"
-            echo "File changes detected:"
+            echo "[GIT] ✓ 변경된 파일:"
             git diff --name-only
             git diff --staged --name-only
           fi
+          echo "════════════════════════════════════════════════════════"
 
+      # ── 7. 브랜치 생성 및 커밋 ────────────────────────────────────────────
       - name: Create branch and commit
         if: steps.changes.outputs.changed == 'true'
         id: create_branch
@@ -78,15 +159,42 @@ jobs:
           GOAL_SHORT="${{ github.event.inputs.goal }}"
           git commit -m "auto-dev: ${GOAL_SHORT:0:72}"
           git push -u origin "$BRANCH"
+          echo "[GIT] ✓ 브랜치 생성 및 푸시 완료: $BRANCH"
 
+      # ── 8. Pull Request 생성 ──────────────────────────────────────────────
+      # AUTO_DEV_PAT 우선, 없으면 github.token fallback.
+      # 기존 PR이 있으면 중복 생성하지 않습니다.
+      # PR 권한 오류 시 브랜치를 유지하고 해결 방법을 안내합니다.
       - name: Create Pull Request
         if: steps.changes.outputs.changed == 'true'
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ secrets.AUTO_DEV_PAT || secrets.GITHUB_TOKEN }}
         run: |
+          BRANCH="${{ steps.create_branch.outputs.branch }}"
           GOAL_INPUT="${{ github.event.inputs.goal }}"
           MODE_INPUT="${{ github.event.inputs.mode }}"
           RUN_URL="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          COMPARE_URL="${{ github.server_url }}/${{ github.repository }}/compare/main...$BRANCH"
+
+          echo ""
+          echo "════════════════════════════════════════════════════════"
+          echo "[GIT] PR 생성"
+          echo "════════════════════════════════════════════════════════"
+
+          if [ -z "$BRANCH" ]; then
+            echo "[GIT] WARN: 브랜치명 없음 — PR 생성을 건너뜁니다."
+            exit 0
+          fi
+
+          # 기존 열린 PR 확인 (중복 생성 방지)
+          EXISTING=$(gh pr list --head "$BRANCH" --state open --json url --jq '.[0].url' 2>/dev/null || true)
+          if [ -n "$EXISTING" ]; then
+            echo "[GIT] ℹ 기존 PR 발견 — 새 PR 생성을 생략합니다."
+            echo "[GIT]   기존 PR: $EXISTING"
+            echo "════════════════════════════════════════════════════════"
+            exit 0
+          fi
+
           {
             echo "## 자동 생성된 PR"
             echo ""
@@ -97,8 +205,48 @@ jobs:
             echo "이 PR은 Auto Dev Cloud Mode에서 자동 생성되었습니다."
             echo "변경 내용을 검토한 후 Merge 또는 Close 하세요."
           } > /tmp/pr_body.md
-          gh pr create \
+
+          PR_OUTPUT=$(gh pr create \
             --title "auto-dev: ${GOAL_INPUT}" \
             --body-file /tmp/pr_body.md \
             --base main \
-            --head "${{ steps.create_branch.outputs.branch }}"
+            --head "$BRANCH" 2>&1) && PR_EXIT=0 || PR_EXIT=$?
+
+          if [ "$PR_EXIT" = "0" ]; then
+            echo "[GIT] ✓ PR 생성 완료: $PR_OUTPUT"
+          else
+            echo "[GIT] WARN: PR 생성 실패 (exit=$PR_EXIT)"
+            echo "$PR_OUTPUT"
+            if echo "$PR_OUTPUT" | grep -qi "createPullRequest\|Resource not accessible\|403\|pull request\|GraphQL"; then
+              echo "[GIT]"
+              echo "[GIT] ── PR 권한 오류 해결 방법 ──────────────────────────"
+              echo "[GIT] 방법 1: GitHub Settings → Actions → General"
+              echo "[GIT]         → Allow GitHub Actions to create and approve pull requests 체크"
+              echo "[GIT] 방법 2: AUTO_DEV_PAT Secret 등록"
+              echo "[GIT]         (repo + workflow 권한 Personal Access Token)"
+              echo "[GIT] ────────────────────────────────────────────────────"
+            fi
+            echo "[GIT] 브랜치 '$BRANCH' 는 유지됩니다."
+            echo "[GIT] 수동 PR 생성 URL: $COMPARE_URL"
+          fi
+          echo "════════════════════════════════════════════════════════"
+
+      # ── 9. 최종 요약 (항상 실행) ──────────────────────────────────────────
+      - name: Result Summary
+        if: always()
+        run: |
+          echo ""
+          echo "════════════════════════════════════════════════════════"
+          echo "[RESULT] Auto Dev Loop 실행 요약"
+          echo "════════════════════════════════════════════════════════"
+          echo "[RESULT] 목표    : ${{ github.event.inputs.goal }}"
+          echo "[RESULT] 저장소  : ${{ github.repository }}"
+          echo "[RESULT] 실행번호: #${{ github.run_number }}"
+          echo "[RESULT] 실행로그: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          echo ""
+          echo "[RESULT] 로그 확인 가이드:"
+          echo "[RESULT]   [PRECHECK]   — Secret 및 파일 상태, 권한 안내"
+          echo "[RESULT]   [AI]         — 사용 모델, 응답 형식, 수정 파일 수"
+          echo "[RESULT]   [VALIDATION] — py_compile 결과, 거부 파일과 사유"
+          echo "[RESULT]   [GIT]        — 변경사항, 브랜치명, PR 생성 여부"
+          echo "════════════════════════════════════════════════════════"
