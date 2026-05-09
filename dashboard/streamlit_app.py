@@ -33,6 +33,11 @@ st.markdown(
 
 # ── 헬퍼 ────────────────────────────────────────────────────────────────────
 
+# Add a status card for Auto Dev Queue mock execution result
+mock_result = "Mock execution successful"
+st.markdown(f"### Auto Dev Queue Status\n- {mock_result}")
+
+
 def _get_secret(key: str, default: str = "") -> str:
     """Streamlit Secrets 또는 환경변수에서 값을 가져옵니다."""
     try:
