@@ -3,6 +3,15 @@
 Auto Dev One-Shot Runner
 GitHub Actions에서 한 번만 실행되는 자동 개발 스크립트.
 무한루프 없음 — 태스크 1개 처리 후 종료.
+
+환경변수:
+  GOAL             : 개발 목표 (필수, MOCK_MODE일 때는 선택)
+  MODE             : 실행 모드 (default: standard)
+  OPENAI_API_KEY   : OpenAI API 키
+  ANTHROPIC_API_KEY: Anthropic API 키
+  OPENAI_MODEL     : OpenAI 모델 (default: gpt-4o)
+  ANTHROPIC_MODEL  : Anthropic 모델
+  MOCK_MODE        : 1/true → 실제 API 호출 없이 dry-run 검증
 """
 from __future__ import annotations
 
@@ -24,6 +33,7 @@ OPENAI_API_KEY: str = os.environ.get("OPENAI_API_KEY", "").strip()
 ANTHROPIC_API_KEY: str = os.environ.get("ANTHROPIC_API_KEY", "").strip()
 OPENAI_MODEL: str = os.environ.get("OPENAI_MODEL", "gpt-4o")
 ANTHROPIC_MODEL: str = os.environ.get("ANTHROPIC_MODEL", "claude-3-5-sonnet-20241022")
+MOCK_MODE: bool = os.environ.get("MOCK_MODE", "").lower() in ("1", "true", "yes")
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 
@@ -99,37 +109,71 @@ def get_project_context(max_files: int = 15, max_chars_per_file: int = 2500) -> 
 
 # ── AI 호출 ──────────────────────────────────────────────────────────────────
 
+# 패치 방식(search/replace)과 전체 파일 교체 방식을 모두 지원합니다.
+# 단순 문구 수정은 반드시 "patch" 모드를 사용하도록 유도합니다.
 _SYSTEM_PROMPT = """\
 You are an AI software developer. Given a development goal and project context,
 generate minimal, focused code changes to achieve the goal.
 
-Rules:
-- Make the smallest change necessary to achieve the goal.
-- Prefer modifying existing files over creating new ones.
-- Return ONLY a valid JSON object with this exact structure:
-  {
-    "explanation": "brief description of changes",
-    "files": [
-      {
-        "path": "relative/path/from/repo/root",
-        "content": "complete new file content as a string"
-      }
-    ]
-  }
-- All paths must be relative to the repository root (no leading slash).
-- Do NOT modify workflow files, .env, or security-related files.
+CRITICAL RULES:
+- Make the SMALLEST change necessary. Do NOT rewrite entire files for simple changes.
+- For simple text/string changes (UI labels, messages, captions, docstrings):
+  ALWAYS use "patch" mode with search/replace pairs.
+- For structural or logic changes that require broader edits: use "full" mode.
+- Do NOT modify workflow files (.github/workflows/), .env, or security-related files.
 - Python code must be syntactically valid.
+- All paths must be relative to the repository root (no leading slash).
 - If no code change is needed, return: {"explanation": "no change needed", "files": []}
+
+Return ONLY a valid JSON object. Two supported formats:
+
+FORMAT A — patch mode (PREFERRED for simple/text changes):
+{
+  "explanation": "brief description of changes",
+  "files": [
+    {
+      "path": "relative/path/from/repo/root",
+      "mode": "patch",
+      "patches": [
+        {"search": "exact verbatim text to find", "replace": "new text"}
+      ]
+    }
+  ]
+}
+
+FORMAT B — full mode (ONLY for structural changes that cannot be expressed as patches):
+{
+  "explanation": "brief description of changes",
+  "files": [
+    {
+      "path": "relative/path/from/repo/root",
+      "mode": "full",
+      "content": "complete new file content as a string"
+    }
+  ]
+}
+
+You may mix modes across different files in the same response.
+When in doubt, use patch mode.
 """
 
 
 def _parse_json_response(raw: str) -> dict:
     """AI 응답에서 JSON을 추출합니다 (코드 블록 처리 포함)."""
     raw = raw.strip()
+    # 코드 블록 안의 JSON 추출
     m = re.search(r"```(?:json)?\s*([\s\S]+?)\s*```", raw)
     if m:
         raw = m.group(1).strip()
-    return json.loads(raw)
+    try:
+        return json.loads(raw)
+    except json.JSONDecodeError as exc:
+        # 잘린 JSON 또는 잘못된 JSON 판별
+        if raw.endswith('"') or raw.endswith("'"):
+            raise ValueError(f"AI 응답이 미닫힌 문자열로 끝남 (잘린 출력 가능성): {exc}") from exc
+        if len(raw) > 3900:
+            raise ValueError(f"AI 응답이 최대 토큰에서 잘린 것으로 추정됨 ({len(raw)} chars): {exc}") from exc
+        raise ValueError(f"잘못된 JSON 형식: {exc}") from exc
 
 
 def call_openai(goal: str, context: str) -> dict:
@@ -149,7 +193,11 @@ def call_openai(goal: str, context: str) -> dict:
         max_tokens=4096,
         response_format={"type": "json_object"},
     )
-    return json.loads(response.choices[0].message.content)
+    raw = response.choices[0].message.content
+    try:
+        return json.loads(raw)
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"OpenAI 응답 JSON 파싱 실패: {exc}\n응답 미리보기: {raw[:200]}") from exc
 
 
 def call_anthropic(goal: str, context: str) -> dict:
@@ -177,30 +225,55 @@ def get_ai_changes(goal: str, context: str) -> dict:
     fail("OPENAI_API_KEY 또는 ANTHROPIC_API_KEY가 설정되지 않았습니다.")
 
 
+def get_mock_changes(goal: str) -> dict:
+    """MOCK_MODE용: 실제 API 없이 dry-run 검증 시 사용합니다."""
+    log("[MOCK] AI API 호출을 건너뛰고 mock 응답을 반환합니다.")
+    return {
+        "explanation": f"[MOCK] goal 처리 시뮬레이션: {goal}",
+        "files": [],
+    }
+
+
 # ── 안전성 검증 ──────────────────────────────────────────────────────────────
 
 def is_allowed_path(rel_path: str) -> bool:
     """변경이 허용된 경로인지 확인합니다."""
     p = Path(rel_path)
     if p.suffix not in ALLOWED_EXTENSIONS:
-        log(f"  허용되지 않는 확장자: {p.suffix}")
+        log(f"  거부: 허용되지 않는 확장자 ({p.suffix})")
         return False
     for denied in DENIED_PATH_PREFIXES:
         if rel_path.startswith(denied) or rel_path == denied:
-            log(f"  보호된 경로: {rel_path}")
+            log(f"  거부: 보호된 경로 ({rel_path})")
             return False
-    # 상위 디렉토리 탈출 방지
     try:
         resolved = (PROJECT_ROOT / rel_path).resolve()
         resolved.relative_to(PROJECT_ROOT)
     except ValueError:
-        log(f"  경로 탈출 시도 차단: {rel_path}")
+        log(f"  거부: 경로 탈출 시도 차단 ({rel_path})")
         return False
     return True
 
 
+def _classify_syntax_error(err_msg: str) -> str:
+    """py_compile 오류를 사람이 읽기 쉬운 분류로 변환합니다."""
+    msg_lower = err_msg.lower()
+    if "unterminated string literal" in msg_lower or "eol while scanning string" in msg_lower:
+        return "잘린 문자열 / 미닫힌 따옴표 (unterminated string literal) — AI 출력이 중간에 잘렸을 가능성 높음"
+    if "unexpected eof" in msg_lower or "unexpected end" in msg_lower:
+        return "파일 내용이 중간에 잘림 (unexpected EOF) — max_tokens 한도 도달 가능성"
+    if "invalid syntax" in msg_lower:
+        return "일반 Python 문법 오류 (invalid syntax)"
+    if "indentation" in msg_lower:
+        return "들여쓰기 오류 (IndentationError)"
+    return f"Python 문법 오류: {err_msg}"
+
+
 def validate_python_syntax(content: str, label: str) -> tuple[bool, str]:
-    """Python 파일 문법을 임시 파일로 검증합니다."""
+    """Python 파일 문법을 임시 파일로 검증합니다.
+
+    실패 시 실제 파일에 내용을 쓰지 않습니다.
+    """
     with tempfile.NamedTemporaryFile(
         mode="w", suffix=".py", delete=False, encoding="utf-8"
     ) as tmp:
@@ -210,41 +283,113 @@ def validate_python_syntax(content: str, label: str) -> tuple[bool, str]:
         py_compile.compile(tmp_path, doraise=True)
         return True, ""
     except py_compile.PyCompileError as exc:
-        return False, str(exc)
+        return False, _classify_syntax_error(str(exc))
     finally:
         Path(tmp_path).unlink(missing_ok=True)
 
 
 # ── 파일 적용 ────────────────────────────────────────────────────────────────
 
+def _apply_patches(existing_content: str, patches: list[dict], label: str) -> tuple[bool, str]:
+    """search/replace 패치 목록을 순서대로 적용합니다.
+
+    반환값: (성공 여부, 결과 내용 또는 오류 메시지)
+    """
+    result = existing_content
+    for i, patch in enumerate(patches, start=1):
+        search = patch.get("search", "")
+        replace = patch.get("replace", "")
+        if not search:
+            log(f"  패치 #{i}: search 텍스트가 비어있어 건너뜁니다.")
+            continue
+        if search not in result:
+            return (
+                False,
+                f"패치 #{i}: search 텍스트를 파일에서 찾을 수 없습니다.\n"
+                f"    검색어(앞 80자): {search[:80]!r}",
+            )
+        result = result.replace(search, replace, 1)
+        log(f"  패치 #{i} 적용: {search[:50]!r} → {replace[:50]!r}")
+    return True, result
+
+
 def apply_changes(files: list[dict]) -> list[str]:
     """AI가 제안한 파일 변경을 적용합니다. 적용된 파일의 상대 경로 목록 반환."""
     changed: list[str] = []
+    rejected_reasons: list[str] = []
 
     for entry in files:
         rel_path = (entry.get("path") or "").strip()
-        content = entry.get("content", "")
+        # "mode" 미지정 시 이전 버전 호환을 위해 "full"로 처리
+        mode = entry.get("mode", "full")
 
         if not rel_path:
             log("경로가 빈 항목을 건너뜁니다.")
+            rejected_reasons.append("경로가 없는 항목")
             continue
 
-        log(f"검토 중: {rel_path}")
+        log(f"검토 중: {rel_path} (mode={mode})")
+
         if not is_allowed_path(rel_path):
+            rejected_reasons.append(f"{rel_path}: 보호된 경로 또는 허용되지 않는 확장자")
             continue
-
-        if rel_path.endswith(".py"):
-            ok, err = validate_python_syntax(content, rel_path)
-            if not ok:
-                log(f"  문법 오류 → 건너뜁니다: {err}")
-                continue
-            log("  문법 검증 통과")
 
         target = PROJECT_ROOT / rel_path
+
+        if mode == "patch":
+            patches = entry.get("patches", [])
+            if not patches:
+                log("  거부: patches 목록이 비어있습니다.")
+                rejected_reasons.append(f"{rel_path}: patches 목록이 비어있음")
+                continue
+            if not target.exists():
+                log(f"  거부: 패치 대상 파일이 존재하지 않습니다 ({rel_path})")
+                rejected_reasons.append(f"{rel_path}: 파일이 없어 패치 불가")
+                continue
+            existing = target.read_text(encoding="utf-8")
+            ok, result = _apply_patches(existing, patches, rel_path)
+            if not ok:
+                log(f"  거부: {result}")
+                rejected_reasons.append(f"{rel_path}: 패치 실패 — {result}")
+                continue
+            new_content = result
+            if rel_path.endswith(".py"):
+                syntax_ok, err = validate_python_syntax(new_content, rel_path)
+                if not syntax_ok:
+                    log(f"  거부: 패치 후 문법 검증 실패")
+                    log(f"    원인 분류: {err}")
+                    log("    실제 파일은 수정되지 않았습니다.")
+                    rejected_reasons.append(f"{rel_path}: 패치 후 문법검증 실패 ({err})")
+                    continue
+                log("  문법 검증 통과 (patch)")
+
+        else:
+            # full 모드 — 이전 버전 호환: "content" 키가 없으면 거부
+            new_content = entry.get("content", "")
+            if not new_content:
+                log("  거부: content가 비어있습니다.")
+                rejected_reasons.append(f"{rel_path}: content가 비어있음")
+                continue
+            if rel_path.endswith(".py"):
+                syntax_ok, err = validate_python_syntax(new_content, rel_path)
+                if not syntax_ok:
+                    log(f"  거부: AI 수정안 문법검증 실패")
+                    log(f"    원인 분류: {err}")
+                    log("    실제 파일은 수정되지 않았습니다.")
+                    rejected_reasons.append(f"{rel_path}: AI 수정안 문법검증 실패 ({err})")
+                    continue
+                log("  문법 검증 통과 (full)")
+
         target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_text(content, encoding="utf-8")
+        target.write_text(new_content, encoding="utf-8")
         log(f"  적용 완료: {rel_path}")
         changed.append(rel_path)
+
+    if not changed and rejected_reasons:
+        log("─── 거부 사유 요약 ──────────────────────────────────────────────")
+        for reason in rejected_reasons:
+            log(f"  • {reason}")
+        log("──────────────────────────────────────────────────────────────────")
 
     return changed
 
@@ -290,24 +435,38 @@ def run_related_tests(changed_files: list[str]) -> bool:
 # ── 메인 ────────────────────────────────────────────────────────────────────
 
 def main() -> None:
-    log(f"=== Auto Dev One-Shot 시작 ===")
+    log("=== Auto Dev One-Shot 시작 ===")
+    if MOCK_MODE:
+        log("[MOCK_MODE] 실제 API 호출 없이 dry-run으로 실행합니다.")
     log(f"목표: {GOAL!r}")
     log(f"모드: {MODE!r}")
 
-    if not GOAL:
+    if not GOAL and not MOCK_MODE:
         fail("GOAL 환경변수가 설정되지 않았습니다.")
 
+    effective_goal = GOAL or "[MOCK] dry-run test goal"
+
     # 1. TASKS.md에 목표 추가
-    add_goal_to_tasks(GOAL)
+    add_goal_to_tasks(effective_goal)
 
     # 2. 프로젝트 컨텍스트 수집
     log("프로젝트 컨텍스트 수집 중...")
     context = get_project_context()
     log(f"컨텍스트 수집 완료 ({len(context)} chars)")
 
+    # MOCK_MODE: API 호출 없이 각 단계 검증 후 종료
+    if MOCK_MODE:
+        log("[MOCK] 컨텍스트 수집 검증 완료.")
+        log("[MOCK] AI 응답 파싱 전 단계: _parse_json_response()가 JSON 파싱을 담당합니다.")
+        log("[MOCK] 적용 검증 로직: apply_changes()는 is_allowed_path() → validate_python_syntax() 순으로 실행합니다.")
+        log("[MOCK] Dry-run 완료. 실제 파일 변경 없음.")
+        sys.exit(0)
+
     # 3. AI로 코드 변경안 생성
     try:
-        ai_result = get_ai_changes(GOAL, context)
+        ai_result = get_ai_changes(effective_goal, context)
+    except ValueError as exc:
+        fail(f"AI 응답 파싱 실패: {exc}")
     except Exception as exc:
         fail(f"AI API 호출 실패: {exc}")
 
@@ -323,7 +482,10 @@ def main() -> None:
     # 4. 파일 적용
     changed = apply_changes(files)
     if not changed:
-        log("적용된 파일이 없습니다. (모두 거부되거나 검증 실패)")
+        log("━━━ AI 수정안이 문법검증을 통과하지 못함 ━━━")
+        log("원인: AI가 생성한 파일 내용이 모두 검증에 실패했습니다.")
+        log("조치: 위의 '거부 사유 요약'을 확인하고 GOAL을 구체화하거나 재실행하세요.")
+        log("추적: GitHub Actions 실행 로그에서 '거부 사유 요약'을 검색하세요.")
         sys.exit(1)
 
     # 5. 관련 테스트 실행
