@@ -1,6 +1,5 @@
 """
-Auto Dev 대시보드 — Mobile Cloud Mode
-모바일에서 GitHub Actions를 트리거하고 결과를 확인합니다.
+Auto Dev 대시보드 — 모바일에서 GitHub Actions 트리거 및 결과 확인
 """
 from __future__ import annotations
 
