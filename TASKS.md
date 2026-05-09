@@ -29,38 +29,6 @@ TASKS.md
 
 ## Active
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 - [x] [TASK-35] 주요 오류 유형 확인 및 분류
 - [x] [TASK-36] 오류 수정 및 코드 개선
 - [x] [TASK-37] 최종 통합 테스트 수행
@@ -200,3 +168,24 @@ TASK-30 — 자동 문서화 동기화
 # 3. 1분 후 루프가 자동 시작되는지 로그 확인
 # 4. schedule.json 내용 확인
 Get-Content D:\auto_dev\dashboard\schedule.json | ConvertFrom-Json
+
+---
+
+## Auto Dev Queue
+
+> 방치형 자동개발 큐 — `scripts/auto_dev_queue.py`로 자동 관리됩니다.
+> 수동으로 TASK를 추가하고 GitHub Actions를 실행하면 순차 처리됩니다.
+>
+> **사용법**: PENDING 섹션에 `- TASK-XXX: 작업 설명` 형식으로 추가
+
+## PENDING
+- TASK-001: README에 Auto Dev Queue 사용법 5줄 추가
+- TASK-002: GitHub Actions Summary에 다음 TASK 표시 추가
+
+## RUNNING
+
+## DONE
+
+## FAILED
+
+## BLOCKED

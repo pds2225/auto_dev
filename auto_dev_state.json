@@ -1,0 +1,22 @@
+{
+  "last_run": "2026-05-09 07:23:25 UTC",
+  "last_task": {
+    "id": "N/A",
+    "status": "BLOCKED",
+    "reason": "API Key 없음"
+  },
+  "retry_count": {},
+  "runs": [
+    {
+      "task_id": "TASK-001",
+      "status": "DONE",
+      "time": "2026-05-09 07:23:21 UTC"
+    },
+    {
+      "task_id": "N/A",
+      "status": "BLOCKED",
+      "time": "2026-05-09 07:23:25 UTC",
+      "reason": "API Key 없음"
+    }
+  ]
+}
