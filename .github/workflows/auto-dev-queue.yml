@@ -1,0 +1,273 @@
+name: Auto Dev Queue
+
+# TASKS.md의 ## PENDING 섹션에서 TASK를 하나씩 꺼내 처리합니다.
+# - workflow_dispatch: 수동 실행
+# - schedule: 주석 해제하면 예약 실행 활성화
+
+on:
+  workflow_dispatch:
+    inputs:
+      mock_mode:
+        description: 'Dry-run 모드 (실제 AI API 호출 없음)'
+        required: false
+        default: 'false'
+        type: boolean
+
+  # ── 예약 실행 (기본 비활성화) ──────────────────────────────────────────────
+  # 아래 schedule 주석을 해제하면 정기 실행이 활성화됩니다.
+  # 주의: 예약 실행 시 API Key 소모가 발생합니다.
+  # schedule:
+  #   - cron: '0 2 * * 1-5'  # 평일 새벽 2시 (UTC) = 한국 시간 오전 11시
+
+# ── 동시 실행 방지 ────────────────────────────────────────────────────────────
+# 같은 큐가 동시에 두 번 실행되면 TASKS.md 충돌이 발생할 수 있습니다.
+concurrency:
+  group: auto-dev-queue
+  cancel-in-progress: false  # 실행 중인 큐를 취소하지 않음
+
+permissions:
+  contents: write
+  pull-requests: write
+  actions: read
+
+jobs:
+  queue:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      # ── 1. 소스 체크아웃 ─────────────────────────────────────────────────
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      # ── 2. Python 설정 ────────────────────────────────────────────────────
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      # ── 3. 사전 점검 (Preflight Check) ───────────────────────────────────
+      - name: Preflight Check
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          AUTO_DEV_PAT: ${{ secrets.AUTO_DEV_PAT }}
+        run: |
+          echo ""
+          echo "════════════════════════════════════════════════════════"
+          echo "[PRECHECK] Auto Dev Queue 사전 점검"
+          echo "════════════════════════════════════════════════════════"
+          FAIL=0
+
+          # ── AI API Key 검사 ───────────────────────────────────────
+          if [ -z "$OPENAI_API_KEY" ] && [ -z "$ANTHROPIC_API_KEY" ]; then
+            echo "[PRECHECK] ERROR: AI API Key 없음"
+            echo "[PRECHECK]   필요한 Secret (하나 이상 등록):"
+            echo "[PRECHECK]     OPENAI_API_KEY  — OpenAI API Key"
+            echo "[PRECHECK]     ANTHROPIC_API_KEY — Anthropic API Key"
+            echo "[PRECHECK]   등록 경로: GitHub Settings → Secrets → Actions"
+            FAIL=1
+          else
+            [ -n "$OPENAI_API_KEY" ]    && echo "[PRECHECK] ✓ OPENAI_API_KEY 설정됨"
+            [ -n "$ANTHROPIC_API_KEY" ] && echo "[PRECHECK] ✓ ANTHROPIC_API_KEY 설정됨"
+          fi
+
+          # ── PR 토큰 검사 ──────────────────────────────────────────
+          if [ -n "$AUTO_DEV_PAT" ]; then
+            echo "[PRECHECK] ✓ AUTO_DEV_PAT 설정됨 (PR 생성 우선 사용)"
+          else
+            echo "[PRECHECK] INFO: AUTO_DEV_PAT 없음 → github.token 사용"
+            echo "[PRECHECK]   ※ PR 생성 권한 오류 발생 시:"
+            echo "[PRECHECK]     방법 1: GitHub Settings → Actions → General"
+            echo "[PRECHECK]             → Allow GitHub Actions to create and approve pull requests 활성화"
+            echo "[PRECHECK]     방법 2: AUTO_DEV_PAT Secret 등록 (repo + workflow 권한 PAT)"
+          fi
+
+          # ── 핵심 파일 존재 확인 ───────────────────────────────────
+          for f in TASKS.md scripts/auto_dev_queue.py scripts/run_auto_dev_once.py requirements.txt; do
+            if [ -f "$f" ]; then
+              echo "[PRECHECK] ✓ $f"
+            else
+              echo "[PRECHECK] WARN: $f 없음"
+            fi
+          done
+
+          # ── 큐 스크립트 문법 검사 ─────────────────────────────────
+          for script in scripts/auto_dev_queue.py scripts/run_auto_dev_once.py; do
+            if [ -f "$script" ]; then
+              if python -m py_compile "$script" 2>&1; then
+                echo "[PRECHECK] ✓ $script 문법 정상"
+              else
+                echo "[PRECHECK] ERROR: $script 문법 오류"
+                FAIL=1
+              fi
+            fi
+          done
+
+          # ── TASKS.md 큐 섹션 확인 ────────────────────────────────
+          if grep -q "^## PENDING" TASKS.md; then
+            PENDING_COUNT=$(awk '/^## PENDING/{found=1; next} found && /^## /{found=0} found && /^- TASK-/{count++} END{print count+0}' TASKS.md)
+            echo "[PRECHECK] ✓ ## PENDING 섹션 존재 (TASK 수: ${PENDING_COUNT})"
+          else
+            echo "[PRECHECK] WARN: TASKS.md에 ## PENDING 섹션 없음"
+          fi
+
+          # ── 환경 정보 출력 ────────────────────────────────────────
+          echo "[PRECHECK] 저장소: ${GITHUB_REPOSITORY}"
+          echo "[PRECHECK] 브랜치: ${GITHUB_REF_NAME}"
+          echo "[PRECHECK] 모드:   ${{ github.event.inputs.mock_mode || 'false' }}"
+          echo "════════════════════════════════════════════════════════"
+
+          if [ "$FAIL" = "1" ]; then
+            echo "[PRECHECK] FAILED — 위 오류를 해결 후 재실행하세요."
+            exit 1
+          fi
+          echo "[PRECHECK] SUCCESS — 모든 사전 점검 통과"
+
+      # ── 4. 의존성 설치 ────────────────────────────────────────────────────
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      # ── 5. 큐 처리 실행 ──────────────────────────────────────────────────
+      - name: Run Queue
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          GH_TOKEN: ${{ secrets.AUTO_DEV_PAT || secrets.GITHUB_TOKEN }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          MOCK_MODE: ${{ github.event.inputs.mock_mode || 'false' }}
+        run: python scripts/auto_dev_queue.py
+
+      # ── 6. 변경사항 확인 ──────────────────────────────────────────────────
+      - name: Check for changes
+        id: changes
+        run: |
+          echo ""
+          echo "════════════════════════════════════════════════════════"
+          echo "[GIT] 변경사항 확인"
+          echo "════════════════════════════════════════════════════════"
+          if git diff --quiet && git diff --staged --quiet; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            echo "[GIT] 변경된 파일 없음"
+            echo "[GIT] → TASK 처리 결과 변경사항이 없거나 큐가 비어있습니다."
+          else
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+            echo "[GIT] ✓ 변경된 파일:"
+            git diff --name-only
+            git diff --staged --name-only
+          fi
+          echo "════════════════════════════════════════════════════════"
+
+      # ── 7. 브랜치 생성 및 커밋 ────────────────────────────────────────────
+      - name: Create branch and commit
+        if: steps.changes.outputs.changed == 'true'
+        id: create_branch
+        run: |
+          BRANCH="auto-dev-queue/$(date +%Y%m%d-%H%M%S)"
+          echo "branch=$BRANCH" >> "$GITHUB_OUTPUT"
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git checkout -b "$BRANCH"
+          git add -A
+          git commit -m "auto-dev-queue: task state and code update $(date +%Y%m%d-%H%M%S)"
+          git push -u origin "$BRANCH"
+          echo "[GIT] ✓ 브랜치 생성 및 푸시 완료: $BRANCH"
+
+      # ── 8. Pull Request 생성 ─────────────────────────────────────────────
+      # AUTO_DEV_PAT 우선, 없으면 github.token 사용.
+      # 기존 PR 있으면 중복 생성하지 않습니다.
+      # PR 생성 실패 시 브랜치를 유지하고 안내를 출력합니다.
+      # 자동 merge 금지 — PR 생성까지만 수행합니다.
+      - name: Create Pull Request
+        if: steps.changes.outputs.changed == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.AUTO_DEV_PAT || secrets.GITHUB_TOKEN }}
+        run: |
+          BRANCH="${{ steps.create_branch.outputs.branch }}"
+          RUN_URL="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          COMPARE_URL="${{ github.server_url }}/${{ github.repository }}/compare/main...$BRANCH"
+
+          echo ""
+          echo "════════════════════════════════════════════════════════"
+          echo "[GIT] PR 생성"
+          echo "════════════════════════════════════════════════════════"
+
+          if [ -z "$BRANCH" ]; then
+            echo "[GIT] WARN: 브랜치명 없음 — PR 생성 건너뜁니다."
+            exit 0
+          fi
+
+          # 기존 PR 확인 (중복 방지)
+          EXISTING=$(gh pr list --head "$BRANCH" --state open --json url --jq '.[0].url' 2>/dev/null || true)
+          if [ -n "$EXISTING" ]; then
+            echo "[GIT] ℹ 기존 PR 발견 — 새 PR 생성 생략"
+            echo "[GIT]   기존 PR: $EXISTING"
+            echo "════════════════════════════════════════════════════════"
+            exit 0
+          fi
+
+          {
+            echo "## Auto Dev Queue — 자동 생성 PR"
+            echo ""
+            echo "**실행 워크플로우:** [Run #${{ github.run_number }}](${RUN_URL})"
+            echo "**브랜치:** \`${BRANCH}\`"
+            echo ""
+            echo "### 변경 내용"
+            echo "- TASKS.md 큐 상태 업데이트 (PENDING → DONE/FAILED/BLOCKED)"
+            echo "- auto_dev_state.json 업데이트"
+            echo "- AI가 적용한 코드 변경 (있는 경우)"
+            echo ""
+            echo "### 검토 후 Merge 하세요"
+            echo "⚠️ 자동 merge는 수행되지 않습니다. 내용 확인 후 직접 Merge 또는 Close 하세요."
+          } > /tmp/queue_pr_body.md
+
+          PR_OUTPUT=$(gh pr create \
+            --title "auto-dev-queue: task update $(date +%Y%m%d-%H%M%S)" \
+            --body-file /tmp/queue_pr_body.md \
+            --base main \
+            --head "$BRANCH" 2>&1) && PR_EXIT=0 || PR_EXIT=$?
+
+          if [ "$PR_EXIT" = "0" ]; then
+            echo "[GIT] ✓ PR 생성 완료: $PR_OUTPUT"
+          else
+            echo "[GIT] WARN: PR 생성 실패 (exit=$PR_EXIT)"
+            echo "$PR_OUTPUT"
+            if echo "$PR_OUTPUT" | grep -qi "createPullRequest\|Resource not accessible\|403\|GraphQL"; then
+              echo "[GIT] ── PR 권한 오류 해결 방법 ──────────────────────────"
+              echo "[GIT] 방법 1: GitHub Settings → Actions → General"
+              echo "[GIT]         → Allow GitHub Actions to create and approve pull requests 체크"
+              echo "[GIT] 방법 2: AUTO_DEV_PAT Secret 등록 (repo + workflow 권한 PAT)"
+              echo "[GIT] ────────────────────────────────────────────────────"
+            fi
+            echo "[GIT] 브랜치 '${BRANCH}' 는 유지됩니다."
+            echo "[GIT] 수동 PR 생성: $COMPARE_URL"
+          fi
+          echo "════════════════════════════════════════════════════════"
+
+      # ── 9. 최종 요약 (항상 실행) ──────────────────────────────────────────
+      - name: Result Summary
+        if: always()
+        run: |
+          echo ""
+          echo "════════════════════════════════════════════════════════"
+          echo "[RESULT] Auto Dev Queue 실행 요약"
+          echo "════════════════════════════════════════════════════════"
+          echo "[RESULT] 저장소  : ${{ github.repository }}"
+          echo "[RESULT] 실행번호: #${{ github.run_number }}"
+          echo "[RESULT] 실행로그: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          echo ""
+          echo "[RESULT] 로그 확인 가이드:"
+          echo "[RESULT]   [PRECHECK]   — Secret 상태, 파일 확인, 권한 안내"
+          echo "[RESULT]   [QUEUE]      — 선택된 TASK 및 남은 큐 수"
+          echo "[RESULT]   [EXECUTION]  — TASK 실행 상세 로그"
+          echo "[RESULT]   [STATE]      — DONE / FAILED / BLOCKED 처리"
+          echo "[RESULT]   [GIT]        — 변경사항, 브랜치, PR 상태"
+          echo ""
+          echo "[RESULT] 다음 TASK를 추가하려면:"
+          echo "[RESULT]   TASKS.md의 ## PENDING 섹션에 다음 형식으로 추가하세요:"
+          echo "[RESULT]   - TASK-XXX: 작업 설명"
+          echo "════════════════════════════════════════════════════════"
