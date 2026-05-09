@@ -138,7 +138,7 @@ if "trigger_ok" not in st.session_state:
 
 # ── 메인 UI ──────────────────────────────────────────────────────────────────
 st.title("🤖 Auto Dev")
-st.caption("모바일 Cloud Mode — GitHub Actions 자동개발")
+st.caption("GitHub Actions 자동개발 대시보드")
 
 st.divider()
 
