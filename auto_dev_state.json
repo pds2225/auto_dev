@@ -1,22 +1,22 @@
 {
-  "last_run": "2026-05-09 07:23:25 UTC",
+  "last_run": "2026-05-09 09:20:36 UTC",
   "last_task": {
-    "id": "N/A",
-    "status": "BLOCKED",
-    "reason": "API Key 없음"
+    "id": "TASK-TEST-001",
+    "desc": "Auto Dev Queue mock 실행 결과를 Streamlit 대시보드에 한 줄 상태 카드로 표시한다.",
+    "status": "DONE"
   },
   "retry_count": {},
   "runs": [
     {
-      "task_id": "TASK-001",
+      "task_id": "TASK-TEST-001",
       "status": "DONE",
-      "time": "2026-05-09 07:23:21 UTC"
-    },
-    {
-      "task_id": "N/A",
-      "status": "BLOCKED",
-      "time": "2026-05-09 07:23:25 UTC",
-      "reason": "API Key 없음"
+      "time": "2026-05-09 09:20:36 UTC",
+      "track": "A",
+      "type": "ui_improvement"
     }
-  ]
+  ],
+  "consecutive_successes": 1,
+  "last_result": "SUCCESS",
+  "last_track": "A",
+  "last_task_type": "ui_improvement"
 }

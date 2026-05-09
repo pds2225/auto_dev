@@ -194,7 +194,7 @@ def read_pending_tasks(tasks_text: str) -> list[tuple[str, str]]:
         if not line.startswith("- "):
             continue
         content = line[2:].strip()
-        m = re.match(r"(TASK-\w+):\s*(.+)", content)
+        m = re.match(r"(TASK-[\w-]+):\s*(.+)", content)
         if m:
             tasks.append((m.group(1), m.group(2).strip()))
     return tasks
