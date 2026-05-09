@@ -33,6 +33,20 @@ st.markdown(
 
 # ── 헬퍼 ────────────────────────────────────────────────────────────────────
 
+# ── 상태 카드 추가 ─────────────────────────────────────────────────────────────
+
+mock_result = "Auto Dev Queue mock execution completed successfully."
+
+st.markdown(
+    f"""
+    <div style='border: 1px solid #ddd; padding: 10px; border-radius: 5px;'>
+        <strong>Status:</strong> {mock_result}
+    </div>
+    """,
+    unsafe_allow_html=True,
+)
+
+
 def _get_secret(key: str, default: str = "") -> str:
     """Streamlit Secrets 또는 환경변수에서 값을 가져옵니다."""
     try:
