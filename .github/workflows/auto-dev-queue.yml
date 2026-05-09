@@ -11,7 +11,11 @@ on:
         description: 'Dry-run 모드 (실제 AI API 호출 없음)'
         required: false
         default: 'false'
-        type: boolean
+      base_branch:
+        description: 'Auto Dev PR base branch'
+        required: false
+        default: 'main_auto_dev_0509'
+        type: string
 
   # ── 예약 실행 (기본 비활성화) ──────────────────────────────────────────────
   # 아래 schedule 주석을 해제하면 정기 실행이 활성화됩니다.
@@ -34,6 +38,8 @@ jobs:
   queue:
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    env:
+      BASE_BRANCH: ${{ github.event.inputs.base_branch || 'main_auto_dev_0509' }}
 
     steps:
       # ── 1. 소스 체크아웃 ─────────────────────────────────────────────────
@@ -150,6 +156,7 @@ jobs:
           GH_TOKEN: ${{ secrets.AUTO_DEV_PAT || secrets.GITHUB_TOKEN }}
           GITHUB_REPOSITORY: ${{ github.repository }}
           MOCK_MODE: ${{ github.event.inputs.mock_mode || 'false' }}
+          BASE_BRANCH: ${{ env.BASE_BRANCH }}
         run: python scripts/auto_dev_queue.py
 
       # ── 6. 변경사항 확인 ──────────────────────────────────────────────────
@@ -181,11 +188,24 @@ jobs:
           echo "branch=$BRANCH" >> "$GITHUB_OUTPUT"
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git checkout -b "$BRANCH"
+
+          git fetch origin main
+          if git ls-remote --heads origin "$BASE_BRANCH" | grep -q "$BASE_BRANCH"; then
+            echo "[GIT] base branch exists: $BASE_BRANCH"
+          else
+            echo "[GIT] base branch not found. creating from main: $BASE_BRANCH"
+            git checkout main
+            git pull origin main
+            git checkout -b "$BASE_BRANCH"
+            git push origin "$BASE_BRANCH"
+          fi
+
+          git fetch origin "$BASE_BRANCH"
+          git checkout -b "$BRANCH" "origin/$BASE_BRANCH"
           git add -A
           git commit -m "auto-dev-queue: task state and code update $(date +%Y%m%d-%H%M%S)"
           git push -u origin "$BRANCH"
-          echo "[GIT] ✓ 브랜치 생성 및 푸시 완료: $BRANCH"
+          echo "[GIT] ✓ 브랜치 생성 및 푸시 완료: $BRANCH (base: $BASE_BRANCH)"
 
       # ── 8. Pull Request 생성 ─────────────────────────────────────────────
       # AUTO_DEV_PAT 우선, 없으면 github.token 사용.
@@ -199,7 +219,7 @@ jobs:
         run: |
           BRANCH="${{ steps.create_branch.outputs.branch }}"
           RUN_URL="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
-          COMPARE_URL="${{ github.server_url }}/${{ github.repository }}/compare/main...$BRANCH"
+          COMPARE_URL="${{ github.server_url }}/${{ github.repository }}/compare/${BASE_BRANCH}...$BRANCH"
 
           echo ""
           echo "════════════════════════════════════════════════════════"
@@ -238,7 +258,7 @@ jobs:
           PR_OUTPUT=$(gh pr create \
             --title "auto-dev-queue: task update $(date +%Y%m%d-%H%M%S)" \
             --body-file /tmp/queue_pr_body.md \
-            --base main \
+            --base "$BASE_BRANCH" \
             --head "$BRANCH" 2>&1) && PR_EXIT=0 || PR_EXIT=$?
 
           if [ "$PR_EXIT" = "0" ]; then
