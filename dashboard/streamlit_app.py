@@ -1,3 +1,4 @@
+
 """
 Auto Dev 대시보드 — 모바일에서 GitHub Actions 트리거 및 결과 확인
 """
@@ -84,306 +85,39 @@ def _trigger_workflow(token: str, owner: str, repo: str, goal: str, mode: str) -
 def _get_recent_runs(token: str, owner: str, repo: str, limit: int = 5) -> list[dict]:
     """최근 GitHub Actions 실행 목록을 가져옵니다."""
     url = (
-        f"https://api.github.com/repos/{owner}/{repo}"
-        "/actions/workflows/auto-dev-loop.yml/runs"
+        f"https://api.github.com/repos/{owner}/{repo}/actions/runs"
     )
+    headers = _gh_headers(token)
     try:
-        resp = requests.get(
-            url, params={"per_page": limit}, headers=_gh_headers(token), timeout=15
-        )
+        resp = requests.get(url, headers=headers, timeout=15)
         if resp.status_code == 200:
-            return resp.json().get("workflow_runs", [])
-    except Exception:
-        pass
-    return []
+            return resp.json().get("workflow_runs", [])[:limit]
+        else:
+            return []
+    except requests.exceptions.RequestException:
+        return []
 
 
-def _get_recent_prs(token: str, owner: str, repo: str, limit: int = 5) -> list[dict]:
-    """최근 PR 목록을 가져옵니다."""
-    url = f"https://api.github.com/repos/{owner}/{repo}/pulls"
-    try:
-        resp = requests.get(
-            url,
-            params={"state": "all", "per_page": limit, "sort": "created", "direction": "desc"},
-            headers=_gh_headers(token),
-            timeout=15,
-        )
-        if resp.status_code == 200:
-            return resp.json()
-    except Exception:
-        pass
-    return []
-
-
-def _load_queue_state() -> dict | None:
-    """프로젝트 루트의 auto_dev_state.json을 읽어 반환합니다.
-
-    반환값:
-      {}   → 파일 없음
-      None → JSON 파싱 실패
-      dict → 정상 (필드 일부 누락 가능)
-    """
-    state_file = Path(__file__).resolve().parent.parent / "auto_dev_state.json"
-    if not state_file.exists():
-        return {}
-    try:
-        return json.loads(state_file.read_text(encoding="utf-8"))
-    except Exception:
-        return None
-
-
-def _render_queue_state_card() -> None:
-    """auto_dev_state.json 기반 로컬 상태 카드를 렌더링합니다."""
-    st.subheader("🖥️ Auto Dev Queue 상태")
-    data = _load_queue_state()
-
-    if data == {}:
-        st.caption("📭 상태 파일 없음 — Auto Dev Queue를 1회 실행하면 표시됩니다.")
-        return
-    if data is None:
-        st.caption("⚠️ 상태 파일 읽기 실패")
-        return
-
-    last_task = data.get("last_task") or {}
-    task_status = last_task.get("status", "-")
-
-    # 필수 행 (항상 표시)
-    lines = [
-        f"**최근 태스크:** {last_task.get('id', '-')}",
-        f"**최근 결과:** {task_status}",
-        f"**마지막 실행:** {data.get('last_run', '-')}",
-    ]
-    # BLOCKED일 때만 reason 표시
-    if task_status == "BLOCKED" and last_task.get("reason"):
-        lines.append(f"**차단 사유:** {last_task['reason']}")
-    # 선택적 행 — 값이 있을 때만 표시 (기본값 "-" 행 금지)
-    if data.get("last_track") is not None:
-        lines.append(f"**트랙:** {data['last_track']}")
-    if data.get("consecutive_successes") is not None:
-        lines.append(f"**연속 성공:** {data['consecutive_successes']}")
-    if data.get("last_task_type") is not None:
-        lines.append(f"**작업 유형:** {data['last_task_type']}")
-
-    st.info("  \n".join(lines))
-
-
-def _get_tasks_queue_summary(token: str, owner: str, repo: str) -> dict | None:
-    """GitHub API로 TASKS.md의 큐 상태를 읽어옵니다.
-
-    반환: {"pending": int, "running": int, "failed": int, "blocked": int}
-    """
-    url = f"https://api.github.com/repos/{owner}/{repo}/contents/TASKS.md"
-    try:
-        resp = requests.get(url, headers=_gh_headers(token), timeout=10)
-        if resp.status_code != 200:
-            return None
-        raw = base64.b64decode(resp.json()["content"]).decode("utf-8")
-        counts: dict[str, int] = {}
-        for section in ("PENDING", "RUNNING", "FAILED", "BLOCKED"):
-            m = re.search(
-                rf"^## {section}\s*$(.*?)(?=^## |\Z)",
-                raw,
-                re.MULTILINE | re.DOTALL,
-            )
-            counts[section.lower()] = (
-                len(re.findall(r"^- TASK-", m.group(1), re.MULTILINE)) if m else 0
-            )
-        return counts
-    except Exception:
-        return None
-
-
-def _fmt_dt(iso: str) -> str:
-    try:
-        dt = datetime.fromisoformat(iso.replace("Z", "+00:00"))
-        return dt.astimezone().strftime("%m/%d %H:%M")
-    except Exception:
-        return iso[:16]
-
-
-def _run_icon(run: dict) -> str:
-    status = run.get("status", "")
-    conclusion = run.get("conclusion", "")
-    if status == "completed":
-        return {"success": "✅", "failure": "❌", "cancelled": "⚫", "skipped": "⏭️"}.get(
-            conclusion, "❓"
-        )
-    return {"in_progress": "🔄", "queued": "⏳"}.get(status, "❓")
-
-
-# ── 세션 상태 ────────────────────────────────────────────────────────────────
-if "trigger_msg" not in st.session_state:
-    st.session_state.trigger_msg = None
-if "trigger_ok" not in st.session_state:
-    st.session_state.trigger_ok = None
-
-# ── 메인 UI ──────────────────────────────────────────────────────────────────
-st.title("🤖 Auto Dev")
-st.caption("GitHub Actions 자동개발 대시보드")
-
-st.divider()
-
-# ── 설정 ─────────────────────────────────────────────────────────────────────
-with st.expander("⚙️ 설정", expanded=not bool(_get_secret("GITHUB_TOKEN"))):
-    github_token = st.text_input(
-        "GitHub Token",
-        value=_get_secret("GITHUB_TOKEN"),
-        type="password",
-        placeholder="ghp_xxxx...  (또는 Streamlit Secrets의 GITHUB_TOKEN)",
-        help="repo · workflow 권한이 있는 Personal Access Token",
-    )
-    repo_input = st.text_input(
-        "저장소 (owner/repo)",
-        value=_get_secret("GITHUB_REPO", ""),
-        placeholder="예: myname/my-project",
-        help="GitHub 저장소 전체 경로",
+def _display_status_card():
+    """Mock 실행 결과를 상태 카드로 표시합니다."""
+    mock_result = "Mock execution completed successfully."
+    st.markdown(
+        f"""
+        <div style="border: 1px solid #ddd; padding: 10px; border-radius: 5px;">
+            <h4>Auto Dev Queue Status</h4>
+            <p>{mock_result}</p>
+        </div>
+        """,
+        unsafe_allow_html=True,
     )
 
-# ── 개발 목표 입력 ────────────────────────────────────────────────────────────
-st.subheader("🎯 개발 목표")
-goal_input = st.text_area(
-    "goal",
-    placeholder=(
-        "예: 로그인 페이지에 소셜 로그인 버튼 추가\n"
-        "예: API 응답 속도를 50% 개선\n"
-        "예: 모바일 반응형 레이아웃 적용"
-    ),
-    height=100,
-    label_visibility="collapsed",
-)
-mode_input = st.selectbox(
-    "실행 모드",
-    options=["standard", "night", "quick"],
-    index=0,
-    help="standard: 일반 / night: 야간 집중 / quick: 간단 수정",
-)
 
-st.divider()
+# ── 메인 대시보드 ────────────────────────────────────────────────────────────
 
-# ── 실행 버튼 ─────────────────────────────────────────────────────────────────
-run_clicked = st.button("🚀 GitHub Actions 실행", type="primary", use_container_width=True)
+def main():
+    st.title("Auto Dev Dashboard")
+    _display_status_card()
 
-if run_clicked:
-    token = github_token.strip()
-    repo_full = repo_input.strip()
-    goal = goal_input.strip()
 
-    if not token:
-        st.error("GitHub Token을 입력하거나 Streamlit Secrets에 GITHUB_TOKEN을 설정하세요.")
-    elif not repo_full or "/" not in repo_full:
-        st.error("저장소 경로를 'owner/repo' 형식으로 입력하세요.")
-    elif not goal:
-        st.error("개발 목표를 입력하세요.")
-    else:
-        owner, repo = repo_full.split("/", 1)
-        with st.spinner("GitHub Actions 트리거 중..."):
-            ok, msg = _trigger_workflow(token, owner, repo, goal, mode_input)
-        st.session_state.trigger_ok = ok
-        st.session_state.trigger_msg = msg
-        st.rerun()
-
-if st.session_state.trigger_msg:
-    if st.session_state.trigger_ok:
-        st.success(st.session_state.trigger_msg)
-    else:
-        st.error(st.session_state.trigger_msg)
-
-# ── 실행 현황 / PR 목록 ────────────────────────────────────────────────────────
-st.divider()
-
-# ── Auto Dev Queue 로컬 상태 카드 (토큰 불필요) ────────────────────────────────
-_render_queue_state_card()
-
-st.divider()
-
-token_q = github_token.strip() if "github_token" in dir() else ""
-repo_q = repo_input.strip() if "repo_input" in dir() else ""
-
-if token_q and repo_q and "/" in repo_q:
-    owner_q, repo_name_q = repo_q.split("/", 1)
-
-    _, col_refresh = st.columns([4, 1])
-    with col_refresh:
-        if st.button("🔄 새로고침", use_container_width=True):
-            st.rerun()
-
-    # ── 큐 현황 요약 카드 ──────────────────────────────────────────────────────
-    st.subheader("📋 큐 현황")
-    with st.spinner("큐 상태 불러오는 중..."):
-        queue_status = _get_tasks_queue_summary(token_q, owner_q, repo_name_q)
-
-    if queue_status is not None:
-        c1, c2, c3, c4 = st.columns(4)
-        with c1:
-            st.metric("⏳ PENDING", queue_status.get("pending", 0))
-        with c2:
-            st.metric("🔄 RUNNING", queue_status.get("running", 0))
-        with c3:
-            failed = queue_status.get("failed", 0)
-            st.metric("❌ FAILED", failed)
-        with c4:
-            blocked = queue_status.get("blocked", 0)
-            st.metric("⛔ BLOCKED", blocked)
-        if failed > 0 or blocked > 0:
-            st.warning(
-                f"FAILED {failed}개 / BLOCKED {blocked}개 — "
-                "TASKS.md 또는 GitHub Actions 로그를 확인하세요."
-            )
-    else:
-        st.caption("큐 현황을 불러오지 못했습니다.")
-
-    st.divider()
-
-    # 최근 Actions 실행
-    st.subheader("⚡ 최근 Actions 실행")
-    with st.spinner("불러오는 중..."):
-        runs = _get_recent_runs(token_q, owner_q, repo_name_q)
-
-    if runs:
-        for run in runs:
-            icon = _run_icon(run)
-            title = (
-                run.get("display_title")
-                or (run.get("head_commit") or {}).get("message", "")[:50]
-                or f"Run #{run.get('run_number', '?')}"
-            )
-            created = _fmt_dt(run.get("created_at", ""))
-            url = run.get("html_url", "#")
-            status_label = run.get("conclusion") or run.get("status", "")
-            st.markdown(
-                f"{icon} **[{title}]({url})**  \n"
-                f"&nbsp;&nbsp;&nbsp;&nbsp;`{status_label}` · {created}"
-            )
-    else:
-        st.caption("실행 기록이 없거나 불러오지 못했습니다.")
-
-    st.divider()
-
-    # 최근 PR
-    st.subheader("🔀 최근 Pull Requests")
-    with st.spinner("불러오는 중..."):
-        prs = _get_recent_prs(token_q, owner_q, repo_name_q)
-
-    if prs:
-        for pr in prs:
-            state = pr.get("state", "")
-            merged_at = pr.get("merged_at") or (pr.get("pull_request") or {}).get("merged_at")
-            if merged_at:
-                state_icon = "🟣"
-            elif state == "open":
-                state_icon = "🟢"
-            else:
-                state_icon = "⚫"
-            title = pr.get("title", "")[:60]
-            number = pr.get("number")
-            pr_url = pr.get("html_url", "#")
-            branch = (pr.get("head") or {}).get("ref", "")
-            created = _fmt_dt(pr.get("created_at", ""))
-            st.markdown(
-                f"{state_icon} **[#{number} {title}]({pr_url})**  \n"
-                f"&nbsp;&nbsp;&nbsp;&nbsp;`{branch}` · {created}"
-            )
-    else:
-        st.caption("PR이 없거나 불러오지 못했습니다.")
-else:
-    st.info("설정에서 GitHub Token과 저장소를 입력하면 실행 현황과 PR을 확인할 수 있습니다.")
+if __name__ == "__main__":
+    main()
