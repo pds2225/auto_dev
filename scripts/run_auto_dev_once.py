@@ -521,18 +521,25 @@ def main() -> None:
     # ── [AI] ────────────────────────────────────────────────────────────────
     log_section("AI", "AI 코드 변경 생성")
 
-    try:
-        ai_result = get_ai_changes(effective_goal, context)
-    except ValueError as exc:
-        log(f"ERROR: AI 응답 파싱 실패 — {exc}")
-        log_section("RESULT", "FAILED")
-        log("다음 행동: 모델 변경(OPENAI_MODEL/ANTHROPIC_MODEL) 또는 GOAL 단순화 후 재실행하세요.")
-        sys.exit(1)
-    except Exception as exc:
-        log(f"ERROR: AI API 호출 실패 — {exc}")
-        log_section("RESULT", "FAILED")
-        log("다음 행동: API Key 유효성 및 네트워크 상태를 확인하세요.")
-        sys.exit(1)
+    # JSON 파싱 실패 시 1회 재시도
+    ai_result = None
+    for _attempt in range(2):
+        try:
+            ai_result = get_ai_changes(effective_goal, context)
+            break
+        except ValueError as exc:
+            if _attempt == 0:
+                log("[AI] JSON parse failed. retrying once.")
+                continue
+            log(f"ERROR: AI 응답 파싱 실패 (2회 시도): {exc}")
+            log_section("RESULT", "FAILED")
+            log("다음 행동: 모델 변경(OPENAI_MODEL/ANTHROPIC_MODEL) 또는 GOAL 단순화 후 재실행하세요.")
+            sys.exit(1)
+        except Exception as exc:
+            log(f"ERROR: AI API 호출 실패 — {exc}")
+            log_section("RESULT", "FAILED")
+            log("다음 행동: API Key 유효성 및 네트워크 상태를 확인하세요.")
+            sys.exit(1)
 
     explanation = ai_result.get("explanation", "")
     files = ai_result.get("files", [])
