@@ -166,6 +166,28 @@ def _render_queue_state_card() -> None:
 
     st.info("  \n".join(lines))
 
+    # ── 브랜치 명명 규칙 정보 ──────────────────────────────────────────────
+    default_base = data.get("default_base_branch")
+    naming_rule = data.get("branch_naming_rule")
+    last_base = data.get("last_base_branch")
+    main_merge = data.get("main_auto_merge_allowed")
+    lab_merge = data.get("lab_auto_merge_allowed")
+
+    if any(v is not None for v in [default_base, naming_rule, last_base, main_merge, lab_merge]):
+        branch_lines = []
+        if default_base:
+            branch_lines.append(f"**현재 자동개발 기준 브랜치:** `{default_base}`")
+        if naming_rule:
+            branch_lines.append(f"**브랜치 규칙:** `{naming_rule}`")
+        if main_merge is not None:
+            branch_lines.append(f"**main 자동 merge:** {'활성' if main_merge else '비활성'}")
+        if lab_merge is not None:
+            branch_lines.append(f"**복제 브랜치 자동 merge:** {'조건부 허용' if lab_merge else '비활성'}")
+        if last_base:
+            branch_lines.append(f"**마지막 PR base branch:** `{last_base}`")
+        if branch_lines:
+            st.caption("  \n".join(branch_lines))
+
 
 def _get_tasks_queue_summary(token: str, owner: str, repo: str) -> dict | None:
     """GitHub API로 TASKS.md의 큐 상태를 읽어옵니다.

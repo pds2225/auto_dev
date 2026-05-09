@@ -12,6 +12,11 @@ on:
         required: false
         default: 'false'
         type: boolean
+      base_branch:
+        description: 'PR base 브랜치 (기본: main_auto_dev_0509)'
+        required: false
+        default: 'main_auto_dev_0509'
+        type: string
 
   # ── 예약 실행 (기본 비활성화) ──────────────────────────────────────────────
   # 아래 schedule 주석을 해제하면 정기 실행이 활성화됩니다.
@@ -42,13 +47,38 @@ jobs:
         with:
           fetch-depth: 0
 
-      # ── 2. Python 설정 ────────────────────────────────────────────────────
+      # ── 2. 기준 브랜치 존재 확인 / 생성 ─────────────────────────────────────
+      # BASE_BRANCH 환경변수를 설정하고, 없으면 origin/main 기반으로 생성합니다.
+      - name: Ensure base branch exists
+        run: |
+          BASE_BRANCH="${{ github.event.inputs.base_branch || 'main_auto_dev_0509' }}"
+          echo "BASE_BRANCH=${BASE_BRANCH}" >> "$GITHUB_ENV"
+          echo "[GIT] 기준 브랜치: ${BASE_BRANCH}"
+
+          if git ls-remote --heads origin "${BASE_BRANCH}" | grep -q "${BASE_BRANCH}"; then
+            echo "[GIT] ✓ 기준 브랜치 존재: ${BASE_BRANCH}"
+          else
+            echo "[GIT] 기준 브랜치 없음 → origin/main 기반으로 생성 중..."
+            git config user.name "github-actions[bot]"
+            git config user.email "github-actions[bot]@users.noreply.github.com"
+            if git checkout -b "${BASE_BRANCH}" origin/main && git push origin "${BASE_BRANCH}"; then
+              echo "[GIT] ✓ 기준 브랜치 생성 완료: ${BASE_BRANCH}"
+            else
+              echo "[RESULT] BLOCKED: 기준 브랜치 생성 실패"
+              echo "[RESULT]   해결 방법:"
+              echo "[RESULT]     1. 저장소에 '${BASE_BRANCH}' 브랜치를 수동으로 생성하세요."
+              echo "[RESULT]     2. 또는 base_branch 입력값을 'main'으로 변경하세요."
+              exit 1
+            fi
+          fi
+
+      # ── 3. Python 설정 ────────────────────────────────────────────────────
       - name: Setup Python
         uses: actions/setup-python@v5
         with:
           python-version: '3.11'
 
-      # ── 3. 사전 점검 (Preflight Check) ───────────────────────────────────
+      # ── 4. 사전 점검 (Preflight Check) ───────────────────────────────────
       - name: Preflight Check
         env:
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
@@ -128,6 +158,7 @@ jobs:
           echo "[PRECHECK] 저장소: ${GITHUB_REPOSITORY}"
           echo "[PRECHECK] 브랜치: ${GITHUB_REF_NAME}"
           echo "[PRECHECK] 모드:   ${{ github.event.inputs.mock_mode || 'false' }}"
+          echo "[PRECHECK] base:   ${{ github.event.inputs.base_branch || 'main_auto_dev_0509' }}"
           echo "════════════════════════════════════════════════════════"
 
           if [ "$FAIL" = "1" ]; then
@@ -150,6 +181,7 @@ jobs:
           GH_TOKEN: ${{ secrets.AUTO_DEV_PAT || secrets.GITHUB_TOKEN }}
           GITHUB_REPOSITORY: ${{ github.repository }}
           MOCK_MODE: ${{ github.event.inputs.mock_mode || 'false' }}
+          BASE_BRANCH: ${{ env.BASE_BRANCH }}
         run: python scripts/auto_dev_queue.py
 
       # ── 6. 변경사항 확인 ──────────────────────────────────────────────────
@@ -198,17 +230,34 @@ jobs:
           GH_TOKEN: ${{ secrets.AUTO_DEV_PAT || secrets.GITHUB_TOKEN }}
         run: |
           BRANCH="${{ steps.create_branch.outputs.branch }}"
+          BASE_BRANCH="${{ env.BASE_BRANCH || 'main_auto_dev_0509' }}"
           RUN_URL="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
-          COMPARE_URL="${{ github.server_url }}/${{ github.repository }}/compare/main...$BRANCH"
+          COMPARE_URL="${{ github.server_url }}/${{ github.repository }}/compare/${BASE_BRANCH}...$BRANCH"
 
           echo ""
           echo "════════════════════════════════════════════════════════"
           echo "[GIT] PR 생성"
+          echo "[GIT] head: $BRANCH"
+          echo "[GIT] base: $BASE_BRANCH"
           echo "════════════════════════════════════════════════════════"
 
           if [ -z "$BRANCH" ]; then
             echo "[GIT] WARN: 브랜치명 없음 — PR 생성 건너뜁니다."
             exit 0
+          fi
+
+          # 자동 merge 보호 로직
+          AUTO_MERGE_NOTE=""
+          if [ "$BASE_BRANCH" = "main" ]; then
+            AUTO_MERGE_NOTE="⛔ **MANUAL_MERGE_REQUIRED**: base=main → 반드시 수동 검토 후 merge"
+            echo "[GIT] MANUAL_MERGE_REQUIRED: base=main → 자동 merge 금지"
+          fi
+
+          # 보호 파일 변경 여부 확인
+          PROTECTED=$(git diff --name-only origin/"$BASE_BRANCH" 2>/dev/null | grep -cE "^\.github/workflows/|^scripts/auto_dev_queue\.py|^scripts/run_auto_dev_once\.py" || echo "0")
+          if [ "$PROTECTED" -gt "0" ]; then
+            echo "[GIT] WARN: 보호 파일 변경 감지 → 자동 merge 금지"
+            AUTO_MERGE_NOTE="${AUTO_MERGE_NOTE}⚠️ 보호 파일(.github/workflows 또는 scripts) 변경 포함 → 수동 검토 필수"
           fi
 
           # 기존 PR 확인 (중복 방지)
@@ -224,21 +273,27 @@ jobs:
             echo "## Auto Dev Queue — 자동 생성 PR"
             echo ""
             echo "**실행 워크플로우:** [Run #${{ github.run_number }}](${RUN_URL})"
-            echo "**브랜치:** \`${BRANCH}\`"
+            echo "**head 브랜치:** \`${BRANCH}\`"
+            echo "**base 브랜치:** \`${BASE_BRANCH}\`"
             echo ""
             echo "### 변경 내용"
             echo "- TASKS.md 큐 상태 업데이트 (PENDING → DONE/FAILED/BLOCKED)"
             echo "- auto_dev_state.json 업데이트"
             echo "- AI가 적용한 코드 변경 (있는 경우)"
             echo ""
+            if [ -n "$AUTO_MERGE_NOTE" ]; then
+              echo "### ⚠️ Merge 주의"
+              echo "$AUTO_MERGE_NOTE"
+              echo ""
+            fi
             echo "### 검토 후 Merge 하세요"
-            echo "⚠️ 자동 merge는 수행되지 않습니다. 내용 확인 후 직접 Merge 또는 Close 하세요."
+            echo "자동 merge는 수행되지 않습니다. 내용 확인 후 직접 Merge 또는 Close 하세요."
           } > /tmp/queue_pr_body.md
 
           PR_OUTPUT=$(gh pr create \
             --title "auto-dev-queue: task update $(date +%Y%m%d-%H%M%S)" \
             --body-file /tmp/queue_pr_body.md \
-            --base main \
+            --base "$BASE_BRANCH" \
             --head "$BRANCH" 2>&1) && PR_EXIT=0 || PR_EXIT=$?
 
           if [ "$PR_EXIT" = "0" ]; then

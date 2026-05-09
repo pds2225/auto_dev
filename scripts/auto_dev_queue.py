@@ -35,6 +35,23 @@ GITHUB_REPOSITORY: str = os.environ.get("GITHUB_REPOSITORY", "").strip()
 MOCK_MODE: bool = os.environ.get("MOCK_MODE", "").lower() in ("1", "true", "yes")
 GITHUB_STEP_SUMMARY: str = os.environ.get("GITHUB_STEP_SUMMARY", "")
 
+
+def get_base_branch(repo_name: str = "", mmdd: str = "") -> str:
+    """브랜치 명명 규칙: main_{repo_name}_{mmdd}
+
+    - repo_name 미지정 시 GITHUB_REPOSITORY 환경변수에서 추출
+    - mmdd 미지정 시 실행 시점의 UTC 날짜(MMDD) 사용
+    """
+    if not repo_name:
+        repo_name = GITHUB_REPOSITORY.split("/")[-1] if GITHUB_REPOSITORY else "auto_dev"
+    if not mmdd:
+        mmdd = datetime.now(timezone.utc).strftime("%m%d")
+    return f"main_{repo_name}_{mmdd}"
+
+
+# workflow 환경변수 BASE_BRANCH 우선, 없으면 명명 규칙으로 계산
+BASE_BRANCH: str = os.environ.get("BASE_BRANCH", "") or get_base_branch()
+
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 
 TASKS_FILE = PROJECT_ROOT / "TASKS.md"
@@ -410,6 +427,8 @@ def main() -> None:
     tasks_text = move_task(tasks_text, task_id, task_desc, "PENDING", "RUNNING")
     TASKS_FILE.write_text(tasks_text, encoding="utf-8")
 
+    log(f"[GIT] base branch: {BASE_BRANCH}")
+
     # ── [EXECUTION] ─────────────────────────────────────────────────────────
     log_section("EXECUTION", f"TASK 실행: {task_id}")
 
@@ -539,6 +558,7 @@ def _finalize_state(
 
     state["last_track"] = track
     state["last_task_type"] = task_type
+    state["last_base_branch"] = BASE_BRANCH
     state["last_run"] = _now()
     state["last_task"] = {"id": task_id, "desc": task_desc, "status": status}
     runs = state.get("runs", [])
