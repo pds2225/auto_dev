@@ -46,6 +46,75 @@ RUNNER_SCRIPT = PROJECT_ROOT / "scripts" / "run_auto_dev_once.py"
 
 MAX_RETRIES: int = 2
 
+# ── TASK 유형 분류 ────────────────────────────────────────────────────────────
+
+TASK_TYPE_KEYWORDS: dict[str, list[str]] = {
+    # 더 구체적인 유형을 먼저 검사해 오탐을 방지합니다.
+    "ui_improvement": [
+        "ui", "화면", "카드", "대시보드", "버튼", "문구", "표시", "디자인", "레이아웃",
+    ],
+    "docs": [
+        "문서", "readme", "agents", "rules", "설명", "docs", "가이드", "주석",
+    ],
+    "test": [
+        "테스트", "pytest", "mock", "dry-run", "test", "단위",
+    ],
+    "error_fix": [
+        "오류", "에러", "실패", "failure", "failed", "bug", "fix", "traceback", "권한", "secret", "error",
+    ],
+    # feature는 가장 마지막에 검사 (일반 키워드 오탐 방지)
+    "feature": [
+        "기능", "추가", "구현", "연동", "생성", "feature",
+    ],
+}
+
+
+def classify_task_type(task_desc: str) -> str:
+    """TASK 설명문을 기준으로 작업 유형을 분류합니다.
+
+    반환값: "error_fix" | "ui_improvement" | "feature" | "docs" | "test"
+    """
+    desc_lower = task_desc.lower()
+    for task_type, keywords in TASK_TYPE_KEYWORDS.items():
+        if any(kw in desc_lower for kw in keywords):
+            return task_type
+    return "feature"
+
+
+def select_task_with_track(
+    pending: list[tuple[str, str]], state: dict
+) -> tuple[tuple[str, str], str]:
+    """Track A/B 분기 로직에 따라 PENDING TASK를 선택합니다.
+
+    Track A: error_fix 우선 (직전 결과 FAILED/BLOCKED 또는 기본)
+    Track B: 기능 고도화 허용 (consecutive_successes >= 2)
+
+    반환: ((task_id, task_desc), track)
+    """
+    last_result = state.get("last_result", "")
+    consecutive = state.get("consecutive_successes", 0)
+
+    # Track A: 직전 결과가 FAILED/BLOCKED이면 error_fix 우선
+    if last_result in ("FAILED", "BLOCKED"):
+        error_tasks = [
+            (tid, tdesc) for tid, tdesc in pending
+            if classify_task_type(tdesc) == "error_fix"
+        ]
+        if error_tasks:
+            log(f"[QUEUE] Track A 선택: last_result={last_result}, error_fix 우선")
+            return error_tasks[0], "A"
+        log(f"[QUEUE] Track A: last_result={last_result}, error_fix 없음 → 일반 PENDING")
+        return pending[0], "A"
+
+    # Track B: 연속 성공 2회 이상이면 기능 고도화 허용
+    if consecutive >= 2:
+        log(f"[QUEUE] Track B 허용: consecutive_successes={consecutive}")
+        return pending[0], "B"
+
+    # 기본: Track A
+    return pending[0], "A"
+
+
 # ── 로그 ────────────────────────────────────────────────────────────────────
 
 _SECTION_BAR = "═" * 56
@@ -263,6 +332,24 @@ def main() -> None:
             if ANTHROPIC_API_KEY:
                 log("✓ ANTHROPIC_API_KEY 설정됨")
 
+    # TASKS.md conflict marker 검사
+    if TASKS_FILE.exists():
+        tasks_raw = TASKS_FILE.read_text(encoding="utf-8")
+        for marker in ("<<<<<<< ", ">>>>>>> "):
+            if marker in tasks_raw:
+                log("[PRECHECK] BLOCKED: TASKS.md contains merge conflict markers")
+                log("[PRECHECK] 해결: git checkout -- TASKS.md 또는 수동 conflict 해결 후 재실행")
+                _record_blocked("MERGE_CONFLICT", "TASKS.md conflict", "TASKS.md에 merge conflict marker 발견")
+                _update_state_blocked("TASKS.md merge conflict")
+                write_summary([
+                    "## Auto Dev Queue",
+                    "- 상태: ⛔ BLOCKED",
+                    "- 원인: TASKS.md에 merge conflict markers 발견",
+                    "- 해결: conflict 해결 후 재실행",
+                ])
+                sys.exit(0)
+        log("[PRECHECK] ✓ TASKS.md conflict marker 없음")
+
     if not preflight_ok:
         log_section("RESULT", "FAILED - 필수 파일 없음")
         sys.exit(1)
@@ -285,17 +372,19 @@ def main() -> None:
         ])
         sys.exit(0)
 
-    task_id, task_desc = pending[0]
-    log(f"선택된 TASK: {task_id}: {task_desc}")
-    log(f"남은 PENDING: {len(pending)}개 (현재 포함)")
+    state = load_state()
+    (task_id, task_desc), track = select_task_with_track(pending, state)
+    task_type = classify_task_type(task_desc)
+    log(f"[QUEUE] selected task: {task_id}: {task_desc}")
+    log(f"[TASK] type={task_type} track={track}")
+    log(f"[QUEUE] 남은 PENDING: {len(pending)}개 (현재 포함)")
 
     # 재시도 횟수 확인
-    state = load_state()
     retry_count_map: dict = state.get("retry_count", {})
     run_count = retry_count_map.get(task_id, 0)
 
     if run_count >= MAX_RETRIES:
-        log(f"TASK {task_id}: 최대 재시도 횟수 {MAX_RETRIES}회 도달 → BLOCKED")
+        log(f"[QUEUE] {task_id}: 최대 재시도 {MAX_RETRIES}회 도달 → BLOCKED")
         tasks_text = move_task(tasks_text, task_id, task_desc, "PENDING", "BLOCKED",
                                f"최대 재시도 초과 {run_count}/{MAX_RETRIES}")
         TASKS_FILE.write_text(tasks_text, encoding="utf-8")
@@ -305,7 +394,7 @@ def main() -> None:
             f"- 차단 시각: {_now()}\n"
             f"- 사유: 최대 재시도 횟수 초과 ({run_count}/{MAX_RETRIES})\n\n",
         )
-        _finalize_state(state, task_id, task_desc, "BLOCKED")
+        _finalize_state(state, task_id, task_desc, "BLOCKED", track, task_type)
         log_section("RESULT", f"BLOCKED — {task_id} 최대 재시도 초과")
         write_summary([
             "## Auto Dev Queue",
@@ -317,7 +406,7 @@ def main() -> None:
         sys.exit(0)
 
     # PENDING → RUNNING
-    log(f"{task_id}: PENDING → RUNNING")
+    log(f"[QUEUE] {task_id}: PENDING → RUNNING")
     tasks_text = move_task(tasks_text, task_id, task_desc, "PENDING", "RUNNING")
     TASKS_FILE.write_text(tasks_text, encoding="utf-8")
 
@@ -375,7 +464,7 @@ def main() -> None:
             log(f"  → 다음 실행 시 재시도 가능 ({new_count}/{MAX_RETRIES})")
 
     # state 최종 저장
-    _finalize_state(state, task_id, task_desc, status)
+    _finalize_state(state, task_id, task_desc, status, track, task_type)
 
     # GitHub Actions Step Summary
     remaining = max(0, len(pending) - 1)
@@ -386,6 +475,8 @@ def main() -> None:
         f"| 항목 | 값 |",
         f"|---|---|",
         f"| TASK | `{task_id}: {task_desc}` |",
+        f"| 유형 | {task_type} |",
+        f"| Track | {track} |",
         f"| 상태 | {icon} {status} |",
         f"| 상세 | {detail[:100]} |",
         f"| 시각 | {_now()} |",
@@ -422,18 +513,43 @@ def _update_state_blocked(reason: str) -> None:
     state = load_state()
     state["last_run"] = _now()
     state["last_task"] = {"id": "N/A", "status": "BLOCKED", "reason": reason}
+    state["consecutive_successes"] = 0
+    state["last_result"] = "BLOCKED"
     runs = state.get("runs", [])
     runs.append({"task_id": "N/A", "status": "BLOCKED", "time": _now(), "reason": reason})
     state["runs"] = runs[-50:]
     save_state(state)
 
 
-def _finalize_state(state: dict, task_id: str, task_desc: str, status: str) -> None:
+def _finalize_state(
+    state: dict,
+    task_id: str,
+    task_desc: str,
+    status: str,
+    track: str = "A",
+    task_type: str = "feature",
+) -> None:
+    """상태 파일을 최종 업데이트합니다. Track A/B 및 연속 성공 카운트 포함."""
+    if status == "DONE":
+        state["consecutive_successes"] = state.get("consecutive_successes", 0) + 1
+        state["last_result"] = "SUCCESS"
+    else:
+        state["consecutive_successes"] = 0
+        state["last_result"] = status  # "FAILED" or "BLOCKED"
+
+    state["last_track"] = track
+    state["last_task_type"] = task_type
     state["last_run"] = _now()
     state["last_task"] = {"id": task_id, "desc": task_desc, "status": status}
     runs = state.get("runs", [])
-    runs.append({"task_id": task_id, "status": status, "time": _now()})
-    state["runs"] = runs[-50:]  # 최근 50개만 유지
+    runs.append({
+        "task_id": task_id,
+        "status": status,
+        "time": _now(),
+        "track": track,
+        "type": task_type,
+    })
+    state["runs"] = runs[-50:]
     save_state(state)
 
 
