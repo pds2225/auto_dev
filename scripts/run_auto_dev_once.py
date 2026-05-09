@@ -10,7 +10,7 @@ GitHub Actions에서 한 번만 실행되는 자동 개발 스크립트.
   OPENAI_API_KEY   : OpenAI API 키
   ANTHROPIC_API_KEY: Anthropic API 키
   OPENAI_MODEL     : OpenAI 모델 (default: gpt-4o)
-  ANTHROPIC_MODEL  : Anthropic 모델
+  ANTHROPIC_MODEL  : Anthropic 모델 (default: claude-3-5-sonnet-20241022)
   MOCK_MODE        : 1/true → 실제 API 호출 없이 dry-run 검증
 """
 from __future__ import annotations
@@ -46,16 +46,28 @@ DENIED_PATH_PREFIXES = [
     ".env",
 ]
 
-
 # ── 로그 ────────────────────────────────────────────────────────────────────
+
+_SECTION_BAR = "═" * 56
+
 
 def log(msg: str) -> None:
     ts = datetime.now().strftime("%H:%M:%S")
     print(f"[{ts}] {msg}", flush=True)
 
 
-def fail(msg: str) -> None:
+def log_section(tag: str, title: str = "") -> None:
+    """섹션 구분 헤더를 출력합니다."""
+    header = f"[{tag}]" + (f" {title}" if title else "")
+    print(f"\n{_SECTION_BAR}", flush=True)
+    print(header, flush=True)
+    print(_SECTION_BAR, flush=True)
+
+
+def fail(msg: str, next_action: str = "") -> None:
     log(f"ERROR: {msg}")
+    if next_action:
+        log(f"다음 행동: {next_action}")
     sys.exit(1)
 
 
@@ -159,7 +171,10 @@ When in doubt, use patch mode.
 
 
 def _parse_json_response(raw: str) -> dict:
-    """AI 응답에서 JSON을 추출합니다 (코드 블록 처리 포함)."""
+    """AI 응답에서 JSON을 추출합니다 (코드 블록 처리 포함).
+
+    잘린 출력, 미닫힌 따옴표, 잘못된 JSON을 각각 구분해서 오류를 냅니다.
+    """
     raw = raw.strip()
     # 코드 블록 안의 JSON 추출
     m = re.search(r"```(?:json)?\s*([\s\S]+?)\s*```", raw)
@@ -168,11 +183,15 @@ def _parse_json_response(raw: str) -> dict:
     try:
         return json.loads(raw)
     except json.JSONDecodeError as exc:
-        # 잘린 JSON 또는 잘못된 JSON 판별
+        # 오류 원인 분류
         if raw.endswith('"') or raw.endswith("'"):
-            raise ValueError(f"AI 응답이 미닫힌 문자열로 끝남 (잘린 출력 가능성): {exc}") from exc
+            raise ValueError(
+                "AI 응답이 미닫힌 문자열로 끝남 (max_tokens 초과로 잘린 출력 가능성)"
+            ) from exc
         if len(raw) > 3900:
-            raise ValueError(f"AI 응답이 최대 토큰에서 잘린 것으로 추정됨 ({len(raw)} chars): {exc}") from exc
+            raise ValueError(
+                f"AI 응답이 최대 토큰에서 잘린 것으로 추정됨 ({len(raw)} chars)"
+            ) from exc
         raise ValueError(f"잘못된 JSON 형식: {exc}") from exc
 
 
@@ -181,7 +200,8 @@ def call_openai(goal: str, context: str) -> dict:
 
     client = openai.OpenAI(api_key=OPENAI_API_KEY)
     user_msg = f"**개발 목표:** {goal}\n\n**프로젝트 컨텍스트:**\n{context}"
-    log(f"OpenAI API 호출 중 (model={OPENAI_MODEL})...")
+    log(f"사용 모델: {OPENAI_MODEL}")
+    log("OpenAI API 호출 중...")
 
     response = client.chat.completions.create(
         model=OPENAI_MODEL,
@@ -197,7 +217,9 @@ def call_openai(goal: str, context: str) -> dict:
     try:
         return json.loads(raw)
     except json.JSONDecodeError as exc:
-        raise ValueError(f"OpenAI 응답 JSON 파싱 실패: {exc}\n응답 미리보기: {raw[:200]}") from exc
+        raise ValueError(
+            f"OpenAI 응답 JSON 파싱 실패: {exc}\n응답 미리보기: {raw[:200]}"
+        ) from exc
 
 
 def call_anthropic(goal: str, context: str) -> dict:
@@ -205,7 +227,8 @@ def call_anthropic(goal: str, context: str) -> dict:
 
     client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
     user_msg = f"**개발 목표:** {goal}\n\n**프로젝트 컨텍스트:**\n{context}"
-    log(f"Anthropic API 호출 중 (model={ANTHROPIC_MODEL})...")
+    log(f"사용 모델: {ANTHROPIC_MODEL}")
+    log("Anthropic API 호출 중...")
 
     response = client.messages.create(
         model=ANTHROPIC_MODEL,
@@ -222,16 +245,10 @@ def get_ai_changes(goal: str, context: str) -> dict:
         return call_openai(goal, context)
     if ANTHROPIC_API_KEY:
         return call_anthropic(goal, context)
-    fail("OPENAI_API_KEY 또는 ANTHROPIC_API_KEY가 설정되지 않았습니다.")
-
-
-def get_mock_changes(goal: str) -> dict:
-    """MOCK_MODE용: 실제 API 없이 dry-run 검증 시 사용합니다."""
-    log("[MOCK] AI API 호출을 건너뛰고 mock 응답을 반환합니다.")
-    return {
-        "explanation": f"[MOCK] goal 처리 시뮬레이션: {goal}",
-        "files": [],
-    }
+    fail(
+        "OPENAI_API_KEY 또는 ANTHROPIC_API_KEY가 설정되지 않았습니다.",
+        "GitHub Settings > Secrets > Actions 에서 API Key를 등록하세요.",
+    )
 
 
 # ── 안전성 검증 ──────────────────────────────────────────────────────────────
@@ -246,6 +263,7 @@ def is_allowed_path(rel_path: str) -> bool:
         if rel_path.startswith(denied) or rel_path == denied:
             log(f"  거부: 보호된 경로 ({rel_path})")
             return False
+    # 상위 디렉토리 탈출 방지
     try:
         resolved = (PROJECT_ROOT / rel_path).resolve()
         resolved.relative_to(PROJECT_ROOT)
@@ -256,7 +274,7 @@ def is_allowed_path(rel_path: str) -> bool:
 
 
 def _classify_syntax_error(err_msg: str) -> str:
-    """py_compile 오류를 사람이 읽기 쉬운 분류로 변환합니다."""
+    """py_compile 오류를 원인 유형별로 분류합니다."""
     msg_lower = err_msg.lower()
     if "unterminated string literal" in msg_lower or "eol while scanning string" in msg_lower:
         return "잘린 문자열 / 미닫힌 따옴표 (unterminated string literal) — AI 출력이 중간에 잘렸을 가능성 높음"
@@ -356,7 +374,7 @@ def apply_changes(files: list[dict]) -> list[str]:
             if rel_path.endswith(".py"):
                 syntax_ok, err = validate_python_syntax(new_content, rel_path)
                 if not syntax_ok:
-                    log(f"  거부: 패치 후 문법 검증 실패")
+                    log("  거부: 패치 후 문법 검증 실패")
                     log(f"    원인 분류: {err}")
                     log("    실제 파일은 수정되지 않았습니다.")
                     rejected_reasons.append(f"{rel_path}: 패치 후 문법검증 실패 ({err})")
@@ -373,7 +391,7 @@ def apply_changes(files: list[dict]) -> list[str]:
             if rel_path.endswith(".py"):
                 syntax_ok, err = validate_python_syntax(new_content, rel_path)
                 if not syntax_ok:
-                    log(f"  거부: AI 수정안 문법검증 실패")
+                    log("  거부: AI 수정안 문법검증 실패")
                     log(f"    원인 분류: {err}")
                     log("    실제 파일은 수정되지 않았습니다.")
                     rejected_reasons.append(f"{rel_path}: AI 수정안 문법검증 실패 ({err})")
@@ -414,7 +432,7 @@ def run_related_tests(changed_files: list[str]) -> bool:
         log("관련 테스트 파일이 없습니다. 테스트를 건너뜁니다.")
         return True
 
-    log(f"관련 테스트 실행: {related}")
+    log(f"관련 테스트 실행: {[Path(t).name for t in related]}")
     result = subprocess.run(
         [sys.executable, "-m", "pytest"] + related + ["-v", "--tb=short", "-x"],
         cwd=PROJECT_ROOT,
@@ -425,6 +443,10 @@ def run_related_tests(changed_files: list[str]) -> bool:
     print(result.stdout)
     if result.returncode != 0:
         print(result.stderr, file=sys.stderr)
+        # 실패한 테스트 파일 출력
+        for line in result.stdout.splitlines():
+            if "FAILED" in line:
+                log(f"  실패: {line.strip()}")
         log("테스트 실패.")
         return False
 
@@ -435,14 +457,47 @@ def run_related_tests(changed_files: list[str]) -> bool:
 # ── 메인 ────────────────────────────────────────────────────────────────────
 
 def main() -> None:
-    log("=== Auto Dev One-Shot 시작 ===")
-    if MOCK_MODE:
-        log("[MOCK_MODE] 실제 API 호출 없이 dry-run으로 실행합니다.")
+
+    # ── [PRECHECK] ──────────────────────────────────────────────────────────
+    log_section("PRECHECK", "사전 점검")
     log(f"목표: {GOAL!r}")
     log(f"모드: {MODE!r}")
+    if MOCK_MODE:
+        log("MOCK_MODE: 실제 API 호출 없이 dry-run으로 실행합니다.")
 
+    preflight_ok = True
+
+    # GOAL 검사
     if not GOAL and not MOCK_MODE:
-        fail("GOAL 환경변수가 설정되지 않았습니다.")
+        log("ERROR: GOAL 환경변수가 설정되지 않았습니다.")
+        preflight_ok = False
+
+    # API Key 검사 (MOCK_MODE가 아닐 때만)
+    if not MOCK_MODE:
+        if not OPENAI_API_KEY and not ANTHROPIC_API_KEY:
+            log("ERROR: OPENAI_API_KEY 또는 ANTHROPIC_API_KEY 중 하나가 필요합니다.")
+            log("  → GitHub Settings > Secrets > Actions 에서 등록하세요.")
+            preflight_ok = False
+        else:
+            if OPENAI_API_KEY:
+                log("✓ OPENAI_API_KEY 설정됨")
+            if ANTHROPIC_API_KEY:
+                log("✓ ANTHROPIC_API_KEY 설정됨")
+
+    # 핵심 파일 존재 확인 (경고만, 실패 아님)
+    for rel_check in ["TASKS.md", "dashboard/streamlit_app.py"]:
+        p = PROJECT_ROOT / rel_check
+        if p.exists():
+            log(f"✓ {rel_check}")
+        else:
+            log(f"⚠ WARN: {rel_check} 없음 (선택적)")
+
+    if not preflight_ok:
+        log_section("RESULT", "FAILED")
+        log("다음 행동: 위 사전 점검 오류를 해결 후 재실행하세요.")
+        sys.exit(1)
+
+    log("✅ 사전 점검 통과")
 
     effective_goal = GOAL or "[MOCK] dry-run test goal"
 
@@ -454,46 +509,68 @@ def main() -> None:
     context = get_project_context()
     log(f"컨텍스트 수집 완료 ({len(context)} chars)")
 
-    # MOCK_MODE: API 호출 없이 각 단계 검증 후 종료
+    # MOCK_MODE dry-run: 실제 API 없이 단계별 검증 후 종료
     if MOCK_MODE:
-        log("[MOCK] 컨텍스트 수집 검증 완료.")
-        log("[MOCK] AI 응답 파싱 전 단계: _parse_json_response()가 JSON 파싱을 담당합니다.")
-        log("[MOCK] 적용 검증 로직: apply_changes()는 is_allowed_path() → validate_python_syntax() 순으로 실행합니다.")
-        log("[MOCK] Dry-run 완료. 실제 파일 변경 없음.")
+        log("✓ 컨텍스트 수집 검증 완료.")
+        log("✓ AI 응답 파싱 전 단계: _parse_json_response() 담당")
+        log("✓ 적용 검증 로직: is_allowed_path() → validate_python_syntax() 순서")
+        log_section("RESULT", "SUCCESS (MOCK DRY-RUN)")
+        log("다음 행동: MOCK_MODE를 해제하고 실제 GOAL과 API Key로 실행하세요.")
         sys.exit(0)
 
-    # 3. AI로 코드 변경안 생성
+    # ── [AI] ────────────────────────────────────────────────────────────────
+    log_section("AI", "AI 코드 변경 생성")
+
     try:
         ai_result = get_ai_changes(effective_goal, context)
     except ValueError as exc:
-        fail(f"AI 응답 파싱 실패: {exc}")
+        log(f"ERROR: AI 응답 파싱 실패 — {exc}")
+        log_section("RESULT", "FAILED")
+        log("다음 행동: 모델 변경(OPENAI_MODEL/ANTHROPIC_MODEL) 또는 GOAL 단순화 후 재실행하세요.")
+        sys.exit(1)
     except Exception as exc:
-        fail(f"AI API 호출 실패: {exc}")
+        log(f"ERROR: AI API 호출 실패 — {exc}")
+        log_section("RESULT", "FAILED")
+        log("다음 행동: API Key 유효성 및 네트워크 상태를 확인하세요.")
+        sys.exit(1)
 
     explanation = ai_result.get("explanation", "")
     files = ai_result.get("files", [])
     log(f"AI 응답: {explanation}")
-    log(f"변경 대상 파일 수: {len(files)}")
+    modes_used = {f.get("mode", "full") for f in files}
+    log(f"응답 형식: {', '.join(sorted(modes_used)) if modes_used else 'none'}")
+    log(f"수정 대상 파일 수: {len(files)}")
 
     if not files:
-        log("변경할 파일이 없습니다. 완료.")
+        log("변경할 파일이 없습니다.")
+        log_section("RESULT", "SUCCESS")
+        log("다음 행동: AI가 변경이 필요 없다고 판단했습니다. GOAL을 더 구체적으로 작성해 재실행하세요.")
         sys.exit(0)
 
-    # 4. 파일 적용
+    # ── [VALIDATION] ────────────────────────────────────────────────────────
+    log_section("VALIDATION", "파일 검증 및 적용")
+
     changed = apply_changes(files)
+
     if not changed:
         log("━━━ AI 수정안이 문법검증을 통과하지 못함 ━━━")
         log("원인: AI가 생성한 파일 내용이 모두 검증에 실패했습니다.")
-        log("조치: 위의 '거부 사유 요약'을 확인하고 GOAL을 구체화하거나 재실행하세요.")
-        log("추적: GitHub Actions 실행 로그에서 '거부 사유 요약'을 검색하세요.")
+        log("원본 파일은 변경되지 않았습니다.")
+        log_section("RESULT", "FAILED")
+        log("다음 행동: 위의 '거부 사유 요약'을 확인하고 GOAL을 구체화하거나 재실행하세요.")
+        log("  검색 키워드: '거부 사유 요약' 또는 'AI 수정안 문법검증 실패'")
         sys.exit(1)
 
-    # 5. 관련 테스트 실행
+    # 관련 테스트 실행
     test_ok = run_related_tests(changed)
     if not test_ok:
-        fail("테스트 실패. 변경 내용을 확인하세요.")
+        log_section("RESULT", "FAILED")
+        log("다음 행동: 테스트 실패 파일을 확인하고 변경 내용을 검토하세요.")
+        sys.exit(1)
 
-    log(f"=== 완료. 변경된 파일: {changed} ===")
+    log_section("RESULT", "SUCCESS")
+    log(f"변경된 파일: {changed}")
+    log("다음 행동: GitHub Actions [GIT] 섹션에서 생성된 PR을 확인하고 검토 후 Merge 하세요.")
     sys.exit(0)
 
 
