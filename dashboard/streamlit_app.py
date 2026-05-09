@@ -1,5 +1,5 @@
 """
-Auto Dev 대시보드 — 모바일에서 GitHub Actions 트리거 및 결과 확인
+Auto Dev 대시보드 — GitHub Actions 관리
 """
 from __future__ import annotations
 
