@@ -182,13 +182,13 @@ Get-Content D:\auto_dev\dashboard\schedule.json | ConvertFrom-Json
 
 ## PENDING
 - TASK-TEST-001: Auto Dev Queue mock 실행 결과를 Streamlit 대시보드에 한 줄 상태 카드로 표시한다.
-- TASK-001: README에 Auto Dev Queue 사용법 5줄 추가
 - TASK-002: GitHub Actions Summary에 다음 TASK 표시 추가- TASK-001: Streamlit 대시보드의 Auto Dev Queue 상태 카드 제목을 더 짧게 수정한다. 기능은 변경하지 않는다.
 
 
 ## RUNNING
 
 ## DONE
+- TASK-001: README에 Auto Dev Queue 사용법 5줄 추가
 
 ## FAILED
 
