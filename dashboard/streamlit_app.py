@@ -147,24 +147,10 @@ def _render_queue_state_card() -> None:
     last_task = data.get("last_task") or {}
     task_status = last_task.get("status", "-")
 
-    # 필수 행 (항상 표시)
-    lines = [
-        f"**최근 태스크:** {last_task.get('id', '-')}",
-        f"**최근 결과:** {task_status}",
-        f"**마지막 실행:** {data.get('last_run', '-')}",
-    ]
-    # BLOCKED일 때만 reason 표시
-    if task_status == "BLOCKED" and last_task.get("reason"):
-        lines.append(f"**차단 사유:** {last_task['reason']}")
-    # 선택적 행 — 값이 있을 때만 표시 (기본값 "-" 행 금지)
-    if data.get("last_track") is not None:
-        lines.append(f"**트랙:** {data['last_track']}")
-    if data.get("consecutive_successes") is not None:
-        lines.append(f"**연속 성공:** {data['consecutive_successes']}")
-    if data.get("last_task_type") is not None:
-        lines.append(f"**작업 유형:** {data['last_task_type']}")
-
-    st.info("  \n".join(lines))
+    task_id = last_task.get("id", "-")
+    last_run = data.get("last_run") or "-"
+    extra = f" | 차단: {last_task['reason']}" if task_status == "BLOCKED" and last_task.get("reason") else ""
+    st.info(f"**{task_id}** | {task_status} | {last_run}{extra}")
 
 
 def _get_tasks_queue_summary(token: str, owner: str, repo: str) -> dict | None:
