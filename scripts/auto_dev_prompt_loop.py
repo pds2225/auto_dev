@@ -73,6 +73,8 @@ def _build_prompt(task_id: str, task_desc: str, repo_root: Path) -> str:
 
 
 def main(argv: list[str] | None = None) -> int:
+    if hasattr(sys.stdout, "reconfigure"):
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
     parser = argparse.ArgumentParser(description="PENDING TASK → Claude Code 프롬프트 생성")
     parser.add_argument("--copy", action="store_true", help="생성된 프롬프트를 Windows 클립보드에 복사")
     parser.add_argument("--task-id", metavar="TASK-XXX", help="지정 TASK 우선 선택")
@@ -106,7 +108,8 @@ def main(argv: list[str] | None = None) -> int:
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     out_file = repo_root / f"auto_prompt_{timestamp}.md"
     out_file.write_text(prompt, encoding="utf-8")
-    print(f"Prompt saved: {out_file}")
+    print(f"선택 TASK : {task_desc}")
+    print(f"저장 경로 : {out_file}")
 
     if args.copy:
         try:
