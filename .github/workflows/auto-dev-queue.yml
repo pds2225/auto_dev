@@ -301,3 +301,23 @@ jobs:
           echo "[RESULT]   TASKS.md의 ## PENDING 섹션에 다음 형식으로 추가하세요:"
           echo "[RESULT]   - TASK-XXX: 작업 설명"
           echo "════════════════════════════════════════════════════════"
+
+          NEXT_TASK=$(awk '/^## PENDING/{found=1; next} found && /^## /{exit} found && /^- TASK-/{print; exit}' TASKS.md)
+          {
+            echo "## Auto Dev Queue 실행 요약"
+            echo ""
+            echo "| 항목 | 값 |"
+            echo "|---|---|"
+            echo "| 저장소 | \`${{ github.repository }}\` |"
+            echo "| 실행 번호 | #${{ github.run_number }} |"
+            echo "| 실행 로그 | [${{ github.run_id }}](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}) |"
+            echo ""
+            echo "### 다음 PENDING TASK"
+            if [ -n "$NEXT_TASK" ]; then
+              echo "\`\`\`"
+              echo "$NEXT_TASK"
+              echo "\`\`\`"
+            else
+              echo "> PENDING 큐가 비어 있습니다."
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
