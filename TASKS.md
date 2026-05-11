@@ -181,7 +181,6 @@ Get-Content D:\auto_dev\dashboard\schedule.json | ConvertFrom-Json
 > **사용법**: PENDING 섹션에 `- TASK-XXX: 작업 설명` 형식으로 추가
 
 ## PENDING
-- TASK-002: GitHub Actions Summary에 다음 TASK 표시 추가- TASK-001: Streamlit 대시보드의 Auto Dev Queue 상태 카드 제목을 더 짧게 수정한다. 기능은 변경하지 않는다.
 
 
 ## RUNNING
@@ -193,3 +192,4 @@ Get-Content D:\auto_dev\dashboard\schedule.json | ConvertFrom-Json
 ## FAILED
 
 ## BLOCKED
+- TASK-002: GitHub Actions Summary에 다음 TASK 표시 추가 — 워크플로우 파일 수정 포함, 사람 검토 필요 (PR #13)
