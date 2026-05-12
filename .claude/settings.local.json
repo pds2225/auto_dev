@@ -12,7 +12,10 @@
       "Bash(curl -s -X POST http://localhost:5000/api/loop/toggle -H \"Content-Type: application/json\" -d \"{}\")",
       "Bash(timeout 15 claude -p \"파일 목록 알려줘\" --dangerously-skip-permissions)",
       "Bash(echo \"exit: $?\")",
-      "Bash(python3 -c \"import sys,json; [print\\(b['name']\\) for b in json.load\\(sys.stdin\\)]\")"
+      "Bash(python3 -c \"import sys,json; [print\\(b['name']\\) for b in json.load\\(sys.stdin\\)]\")",
+      "Bash(Get-ChildItem D:\\\\auto_dev -Depth 0 -File)",
+      "Bash(Select-Object Name)",
+      "Bash(Sort-Object Name)"
     ]
   }
 }
