@@ -294,6 +294,76 @@ def _fmt_dt(iso: str) -> str:
         return iso[:16]
 
 
+def _run_git_command(args: list[str], cwd: str) -> tuple[bool, str]:
+    try:
+        result = subprocess.run(
+            ["git"] + args,
+            cwd=cwd,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=30,
+        )
+        if result.returncode == 0:
+            return True, result.stdout.strip()
+        return False, result.stderr.strip()
+    except FileNotFoundError:
+        return False, "git 명령을 찾을 수 없습니다. Git이 설치되어 있는지 확인하세요."
+    except Exception as e:
+        return False, str(e)
+
+
+def _run_gh_command(args: list[str], cwd: str, token: str = "") -> tuple[bool, str]:
+    env = os.environ.copy()
+    if token:
+        env["GH_TOKEN"] = token
+    try:
+        result = subprocess.run(
+            ["gh"] + args,
+            cwd=cwd,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=30,
+            env=env,
+        )
+        if result.returncode == 0:
+            return True, result.stdout.strip()
+        return False, result.stderr.strip()
+    except FileNotFoundError:
+        return False, "gh CLI를 찾을 수 없습니다."
+    except Exception as e:
+        return False, str(e)
+
+
+def _parse_remote_url(url: str) -> tuple[str, str] | None:
+    m = re.search(r"github\.com[:/]([^/]+)/([^/]+?)(?:\.git)?$", url)
+    if m:
+        return m.group(1), m.group(2)
+    return None
+
+
+def _create_pr_via_api(
+    token: str, owner: str, repo: str, title: str, body: str, head: str, base: str
+) -> tuple[bool, str]:
+    url = f"https://api.github.com/repos/{owner}/{repo}/pulls"
+    payload = {"title": title, "body": body, "head": head, "base": base}
+    try:
+        resp = _github_request("POST", url, json=payload, headers=_gh_headers(token), timeout=15)
+        if resp.status_code == 201:
+            data = resp.json()
+            return True, data.get("html_url", "PR 생성 완료")
+        elif resp.status_code == 422:
+            msg = resp.json().get("message", resp.text[:200])
+            return False, f"PR 생성 실패 (중복 가능성): {msg}"
+        else:
+            return False, f"PR 생성 실패 {resp.status_code}: {resp.text[:200]}"
+    except Exception as e:
+        return False, str(e)
+
+
 def _run_icon(run: dict) -> str:
     status = run.get("status", "")
     conclusion = run.get("conclusion", "")
@@ -367,11 +437,22 @@ with col_stop:
     )
 
 if start_local:
-    pd = local_project_dir.strip()
+    # 공백/따옴표/개행 제거 및 정규화
+    pd = local_project_dir.strip().strip('"').strip("'")
+    pd = os.path.normpath(pd)
+    path_obj = Path(pd)
+
+    # 디버깅 로그
+    print(f"[DEBUG] 입력 원본: {repr(local_project_dir)}")
+    print(f"[DEBUG] 정규화 후: {repr(pd)}")
+    print(f"[DEBUG] exists: {path_obj.exists()}, is_dir: {path_obj.is_dir()}")
+
     if not pd:
         st.error("프로젝트 경로를 입력하세요.")
-    elif not Path(pd).is_dir():
-        st.error(f"유효하지 않은 경로입니다: {pd}")
+    elif not path_obj.exists():
+        st.error(f"경로가 존재하지 않습니다: {pd}")
+    elif not path_obj.is_dir():
+        st.error(f"폴터가 아닙니다: {pd}")
     else:
         runner.start(pd)
         _save_local_state()
@@ -447,6 +528,94 @@ st.markdown(
 )
 log_text = "\n".join(st.session_state.local_logs)
 st.code(log_text[-4000:] if len(log_text) > 4000 else log_text, language="bash")
+
+st.divider()
+
+# ── GitHub 푸시 및 PR 생성 ────────────────────────────────────────────────────
+st.subheader("📤 GitHub에 올리기")
+st.caption("로컬에서 수정한 코드를 GitHub에 올리고 Pull Request를 만듭니다.")
+
+push_project_dir = st.text_input(
+    "푸시할 프로젝트 경로",
+    value=runner.project_dir or local_project_dir or "",
+    placeholder=r"예: D:\marketgate",
+    key="push_project_dir",
+)
+
+push_col1, push_col2 = st.columns(2)
+with push_col1:
+    push_clicked = st.button("📤 커밋 & 푸시", use_container_width=True)
+with push_col2:
+    pr_clicked = st.button("🔀 PR 생성", use_container_width=True, disabled=not github_token.strip())
+
+if push_clicked or pr_clicked:
+    ppd = push_project_dir.strip()
+    if not ppd:
+        st.error("프로젝트 경로를 입력하세요.")
+    elif not Path(ppd).is_dir():
+        st.error(f"유효하지 않은 경로입니다: {ppd}")
+    else:
+        ok_git, msg_git = _run_git_command(["rev-parse", "--git-dir"], ppd)
+        if not ok_git:
+            st.error(f"git 저장소가 아닙니다. 먼저 `git init`과 `git remote add origin ...`을 설정하세요.\n{msg_git}")
+        else:
+            if push_clicked:
+                branch = f"auto-dev/{datetime.now().strftime('%Y%m%d-%H%M%S')}"
+                _run_git_command(["config", "user.name", "github-actions[bot]"], ppd)
+                _run_git_command(["config", "user.email", "github-actions[bot]@users.noreply.github.com"], ppd)
+                _run_git_command(["checkout", "-b", branch], ppd)
+                _run_git_command(["add", "-A"], ppd)
+                ok_c, msg_c = _run_git_command(["commit", "-m", "auto-dev: 로컬 수정"], ppd)
+                if not ok_c and ("nothing to commit" in msg_c.lower() or "nothing added" in msg_c.lower()):
+                    st.warning("변경사항이 없습니다. 먼저 로컬 루프를 실행하세요.")
+                else:
+                    ok_p, msg_p = _run_git_command(["push", "-u", "origin", branch], ppd)
+                    if ok_p:
+                        st.success(f"✅ 푸시 완료: `{branch}`")
+                        st.session_state.push_branch = branch
+                    else:
+                        st.error(f"푸시 실패: {msg_p}")
+            if pr_clicked:
+                branch = st.session_state.get("push_branch", "")
+                if not branch:
+                    ok_b, msg_b = _run_git_command(["branch", "--show-current"], ppd)
+                    if ok_b:
+                        branch = msg_b.strip()
+                if not branch:
+                    st.error("현재 브랜치를 확인할 수 없습니다. 먼저 커밋 & 푸시를 실행하세요.")
+                else:
+                    ok_r, msg_r = _run_git_command(["remote", "get-url", "origin"], ppd)
+                    remote_info = _parse_remote_url(msg_r) if ok_r else None
+                    if not remote_info:
+                        st.error("GitHub remote URL을 파싱할 수 없습니다.")
+                    else:
+                        owner, repo = remote_info
+                        ok_gh, msg_gh = _run_gh_command(
+                            [
+                                "pr", "create",
+                                "--title", f"auto-dev: 로컬 수정 ({branch})",
+                                "--body", "로컬 자동개발 루프에서 생성된 변경사항입니다.",
+                                "--base", "main",
+                            ],
+                            ppd,
+                            github_token,
+                        )
+                        if ok_gh:
+                            st.success(f"✅ PR 생성 완료: {msg_gh}")
+                        else:
+                            if not github_token.strip():
+                                st.error(f"gh CLI 실패 + GitHub Token 없음: {msg_gh}")
+                            else:
+                                ok_api, msg_api = _create_pr_via_api(
+                                    github_token, owner, repo,
+                                    f"auto-dev: 로컬 수정 ({branch})",
+                                    "로컬 자동개발 루프에서 생성된 변경사항입니다.",
+                                    branch, "main",
+                                )
+                                if ok_api:
+                                    st.success(f"✅ PR 생성 완료: {msg_api}")
+                                else:
+                                    st.error(f"PR 생성 실패: {msg_api}")
 
 st.divider()
 
