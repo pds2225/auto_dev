@@ -207,6 +207,15 @@ class LoopRunner:
         end = start + next_section.start() if next_section else len(text)
         return text[start:end]
 
+    def _get_pending_section(self, text: str) -> str:
+        match = re.search(r"^## PENDING\s*$", text, flags=re.MULTILINE)
+        if not match:
+            return ""
+        start = match.end()
+        next_section = re.search(r"^##\s+", text[start:], flags=re.MULTILINE)
+        end = start + next_section.start() if next_section else len(text)
+        return text[start:end]
+
     def _format_task_display(self, day_label: str, task: str) -> str:
         tagged_task_match = re.match(r"^((?:\[[^\]]+\])+\s*)(.+)$", task)
         if tagged_task_match:
@@ -251,9 +260,6 @@ class LoopRunner:
         try:
             text = tasks_path.read_text(encoding="utf-8")
             active = self._get_active_section(text)
-            if not active.strip():
-                self._log("⚠ Active 섹션이 없습니다.")
-                return None
             current_day = ""
             first_entry: dict[str, str] | None = None
             lowest_generated_entry: dict[str, str] | None = None
@@ -288,6 +294,29 @@ class LoopRunner:
                             "regular_pending",
                             "fallback_selected",
                         )
+            # Active에서 미완료 태스크가 없으면 PENDING 섹션도 확인 (fallback)
+            if first_entry is None and lowest_generated_entry is None:
+                pending = self._get_pending_section(text)
+                for line in pending.splitlines():
+                    pm = re.match(r"^- (TASK-[\w-]+):\s*(.+)$", line.strip())
+                    if pm:
+                        task = f"[{pm.group(1)}] {pm.group(2).strip()}"
+                        generated_task_id = self._extract_generated_task_id(task)
+                        if generated_task_id is not None and (
+                            lowest_generated_id is None or generated_task_id < lowest_generated_id
+                        ):
+                            lowest_generated_id = generated_task_id
+                            lowest_generated_entry = self._build_task_selection(
+                                "", task, "generated", "lowest_generated_pending",
+                            )
+                            lowest_generated_entry["selected_from_section"] = "PENDING"
+                        if first_entry is None:
+                            first_entry = self._build_task_selection(
+                                "", task, "regular_pending", "fallback_selected",
+                            )
+                            first_entry["selected_from_section"] = "PENDING"
+                if first_entry is None and lowest_generated_entry is None:
+                    self._log("⚠ Active 섹션이 없습니다.")
             return lowest_generated_entry or first_entry
         except Exception as e:
             self._log(f"⚠ {tasks_path.name} 읽기 실패: {e}")
@@ -309,19 +338,40 @@ class LoopRunner:
             return
         try:
             text = tasks_path.read_text(encoding="utf-8")
+            updated = text
             active = self._get_active_section(text)
-            if not active:
-                return
-            updated_active = active.replace(f"- [ ] {task}", f"- [x] {task}", 1)
-            # [TASK-XX] 정규화 형식인 경우 원본 TASK-XX: 콜론 형식도 시도
-            if updated_active == active:
-                colon_task = re.sub(r"^\[TASK-(\d+)\]\s*", r"TASK-\1: ", task)
-                if colon_task != task:
-                    updated_active = active.replace(f"- [ ] {colon_task}", f"- [x] {colon_task}", 1)
-            updated = text.replace(active, updated_active, 1)
+            if active:
+                updated_active = active.replace(f"- [ ] {task}", f"- [x] {task}", 1)
+                # [TASK-XX] 정규화 형식인 경우 원본 TASK-XX: 콜론 형식도 시도
+                if updated_active == active:
+                    colon_task = re.sub(r"^\[TASK-(\d+)\]\s*", r"TASK-\1: ", task)
+                    if colon_task != task:
+                        updated_active = active.replace(f"- [ ] {colon_task}", f"- [x] {colon_task}", 1)
+                updated = text.replace(active, updated_active, 1)
+            # Active 업데이트 실패 시 PENDING 섹션에서 DONE으로 이동 시도
+            if updated == text:
+                updated = self._move_pending_task_to_done(text, task)
             tasks_path.write_text(updated, encoding="utf-8")
         except Exception as e:
             self._log(f"⚠ {tasks_path.name} 업데이트 실패: {e}")
+
+    def _move_pending_task_to_done(self, text: str, task: str) -> str:
+        colon_id = re.sub(r"^\[(TASK-[\w-]+)\]\s*", r"\1: ", task)
+        if colon_id == task:
+            return text
+        task_key = colon_id.split(":")[0].strip()
+        line_re = re.compile(rf"^- {re.escape(task_key)}:[^\n]*\n?", re.MULTILINE)
+        if not line_re.search(text):
+            return text
+        updated = line_re.sub("", text, count=1)
+        updated = re.sub(r"\n{3,}", "\n\n", updated)
+        done_m = re.search(r"^## DONE\s*$", updated, flags=re.MULTILINE)
+        if done_m:
+            timestamp = datetime.now().strftime("%Y-%m-%d")
+            task_desc = colon_id.split(":", 1)[1].strip() if ":" in colon_id else ""
+            new_line = f"\n- {task_key}: {task_desc} ({timestamp})"
+            updated = updated[:done_m.end()] + new_line + updated[done_m.end():]
+        return updated
 
     def _read_prompt(self, prompt_file: Path) -> str:
         if prompt_file.exists():
@@ -1049,6 +1099,29 @@ class LoopRunner:
                 self.current_stage = "idle"
             self._clear_active_runner_if_self()
             self._log("⏹ 루프 가동 중지")
+            # ── 상태 파일 동기화 (Flask/Streamlit 공유) ──────────────────────
+            try:
+                _state_file = Path(__file__).parent / "loop_state.json"
+                _state_file.write_text(
+                    json.dumps(
+                        {
+                            "running": False,
+                            "project_dir": self.project_dir,
+                            "current_stage": self.current_stage,
+                            "current_task": self.current_task,
+                            "current_task_id": self.current_task_id,
+                            "current_task_type": self.current_task_type,
+                            "selection_reason": self.selection_reason,
+                            "selected_from_section": self.selected_from_section,
+                            "last_updated": datetime.now().isoformat(),
+                        },
+                        ensure_ascii=False,
+                        indent=2,
+                    ),
+                    encoding="utf-8",
+                )
+            except Exception:
+                pass
 
 
 runner = LoopRunner()

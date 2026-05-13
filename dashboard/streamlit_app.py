@@ -7,11 +7,21 @@ import base64
 import json
 import os
 import re
+import sys
+import threading
+import time
 from datetime import datetime
 from pathlib import Path
 
 import requests
 import streamlit as st
+
+# ── 로컬 루프 러너 import ─────────────────────────────────────────────────────
+sys.path.insert(0, str(Path(__file__).parent))
+from loop_runner import runner
+
+STATE_FILE = Path(__file__).parent / "loop_state.json"
+QUEUE_FILE = Path(__file__).parent / "queue.json"
 
 DEFAULT_WORKFLOW_REPO = "pds2225/auto_dev"
 
@@ -44,6 +54,88 @@ def _get_secret(key: str, default: str = "") -> str:
     except Exception:
         pass
     return os.environ.get(key, default)
+
+
+# ── 로컬 루프 상태 / 큐 헬퍼 ────────────────────────────────────────────────
+
+def _save_local_state() -> None:
+    try:
+        STATE_FILE.write_text(
+            json.dumps(
+                {
+                    "running": runner.running,
+                    "project_dir": runner.project_dir,
+                    "current_stage": runner.current_stage,
+                    "current_task": runner.current_task,
+                    "current_task_id": runner.current_task_id,
+                    "current_task_type": runner.current_task_type,
+                    "selection_reason": runner.selection_reason,
+                    "selected_from_section": runner.selected_from_section,
+                    "last_updated": datetime.now().isoformat(),
+                },
+                ensure_ascii=False,
+                indent=2,
+            ),
+            encoding="utf-8",
+        )
+    except Exception as e:
+        print(f"상태 저장 실패: {e}")
+
+
+def _load_local_state() -> None:
+    if STATE_FILE.exists():
+        try:
+            data = json.loads(STATE_FILE.read_text(encoding="utf-8"))
+            project_dir = data.get("project_dir", "")
+            was_running = data.get("running", False)
+            saved_stage = data.get("current_stage", "")
+            if project_dir and Path(project_dir).exists():
+                runner.project_dir = project_dir
+                runner.current_task = data.get("current_task", "")
+                runner.current_task_id = data.get("current_task_id", "")
+                runner.current_task_type = data.get("current_task_type", "")
+                runner.selection_reason = data.get("selection_reason", "")
+                runner.selected_from_section = data.get("selected_from_section", "")
+                # done/error 상태였으면 재시작하지 않음 (Critical 1 방어)
+                if was_running and not runner.running and saved_stage not in ("done", "error"):
+                    runner.start(project_dir)
+        except Exception as e:
+            print(f"상태 로드 실패: {e}")
+
+
+def _read_queue() -> list:
+    try:
+        if QUEUE_FILE.exists():
+            q = json.loads(QUEUE_FILE.read_text(encoding="utf-8"))
+            return q if isinstance(q, list) else []
+    except Exception:
+        pass
+    return []
+
+
+def _write_queue(queue: list) -> None:
+    QUEUE_FILE.write_text(json.dumps(queue, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def _drain_local_logs() -> list[str]:
+    lines: list[str] = []
+    while not runner.log_queue.empty():
+        try:
+            lines.append(runner.log_queue.get_nowait())
+        except Exception:
+            break
+    return lines
+
+
+# NOTE: server.py의 _save_state()와 동기화 필요
+# (향후 공통 모듈 분리 권장)
+# 세션당 1회만 상태 복구 (Warning 2)
+if "local_state_loaded" not in st.session_state:
+    _load_local_state()
+    st.session_state.local_state_loaded = True
+
+
+_load_local_state()
 
 
 def _gh_headers(token: str) -> dict:
@@ -217,6 +309,8 @@ if "trigger_msg" not in st.session_state:
     st.session_state.trigger_msg = None
 if "trigger_ok" not in st.session_state:
     st.session_state.trigger_ok = None
+if "local_logs" not in st.session_state:
+    st.session_state.local_logs = []
 
 # ── 메인 UI ──────────────────────────────────────────────────────────────────
 st.title("🤖 Auto Dev")
@@ -240,8 +334,124 @@ with st.expander("⚙️ 설정", expanded=not bool(_get_secret("GITHUB_TOKEN"))
         help="auto-dev-loop.yml이 있는 저장소입니다. 작업 대상 저장소가 아닙니다.",
     )
 
-# ── 개발 목표 입력 ────────────────────────────────────────────────────────────
-st.subheader("🎯 개발 목표")
+# ── 로컬 자동개발 루프 ────────────────────────────────────────────────────────
+st.subheader("🖥️ 로컬 자동개발 루프")
+st.caption("이 PC에서 TASKS.md를 읽고 직접 코드 개발을 진행합니다.")
+st.warning(
+    "Flask 서버(server.py)와 동시에 실행하면 러너/파일 충돌 위험이 있습니다. "
+    "둘 중 하나만 켜두세요.",
+    icon="⚠️",
+)
+
+local_project_dir = st.text_input(
+    "프로젝트 경로",
+    value=runner.project_dir or "",
+    placeholder=r"예: D:\marketgate",
+    key="local_project_dir",
+)
+
+col_start, col_stop = st.columns(2)
+with col_start:
+    start_local = st.button(
+        "▶️ 로컬 루프 시작",
+        type="primary",
+        use_container_width=True,
+        disabled=runner.running,
+    )
+with col_stop:
+    stop_local = st.button(
+        "⏹️ 로컬 루프 중단",
+        type="secondary",
+        use_container_width=True,
+        disabled=not runner.running,
+    )
+
+if start_local:
+    pd = local_project_dir.strip()
+    if not pd:
+        st.error("프로젝트 경로를 입력하세요.")
+    elif not Path(pd).is_dir():
+        st.error(f"유효하지 않은 경로입니다: {pd}")
+    else:
+        runner.start(pd)
+        _save_local_state()
+        st.session_state.local_logs.append(f"▶ 루프 시작됨 | {pd}")
+        st.rerun()
+
+if stop_local:
+    runner.stop()
+    _save_local_state()
+    st.session_state.local_logs.append("⏹ 루프 중단됨")
+    st.rerun()
+
+# 상태 뱃지
+stage_info = {
+    "idle": ("⏸️ 대기 중", "#21262d", "#8b949e"),
+    "hardening": ("🔨 하드닝 중", "#1c2d4a", "#58a6ff"),
+    "testing": ("🧪 테스트 중", "#2d1f55", "#bc8cff"),
+    "debug": ("🐛 디버그 중", "#3d1f1f", "#ff7b72"),
+    "done": ("✅ 완료", "#1a2d1a", "#3fb950"),
+    "error": ("⚠️ 오류 중지", "#4a1c1c", "#ff7b72"),
+}
+label, bg, fg = stage_info.get(runner.current_stage, ("❓ 알 수 없음", "#21262d", "#8b949e"))
+if runner.running and runner.current_task:
+    label += f" — {runner.current_task}"
+
+st.markdown(
+    f"<div style='margin:8px 0;padding:10px 14px;background:{bg};border-radius:8px;"
+    f"color:{fg};font-weight:600;font-size:0.95rem;'>{label}</div>",
+    unsafe_allow_html=True,
+)
+
+if runner.current_task_id:
+    st.caption(
+        f"ID: `{runner.current_task_id}` | Type: `{runner.current_task_type}` | "
+        f"Reason: `{runner.selection_reason}`"
+    )
+
+if runner.current_stage == "error":
+    st.error("루프가 오류로 중단되었습니다. 로그를 확인하세요.", icon="⚠️")
+
+# 프로젝트 큐
+with st.expander("📂 프로젝트 큐", expanded=False):
+    q = _read_queue()
+    st.caption(f"대기 중: **{len(q)}개**")
+    for idx, qpath in enumerate(q, 1):
+        c1, c2 = st.columns([5, 1])
+        with c1:
+            st.text(f"{idx}. {qpath}")
+        with c2:
+            if st.button("제거", key=f"rm_q_{idx}"):
+                new_q = [p for p in q if p != qpath]
+                _write_queue(new_q)
+                st.rerun()
+    new_q_path = st.text_input("추가할 경로", placeholder=r"예: D:\my-project", key="new_q_path")
+    if st.button("큐에 추가", key="add_q"):
+        nqp = new_q_path.strip()
+        if nqp and Path(nqp).is_dir() and nqp not in q:
+            q.append(nqp)
+            _write_queue(q)
+            st.rerun()
+        elif nqp in q:
+            st.warning("이미 큐에 있습니다.")
+        elif nqp:
+            st.error("유효하지 않은 경로입니다.")
+
+# 실시간 로그 (드레인은 렌더링 직전에 수행)
+st.session_state.local_logs.extend(_drain_local_logs())
+st.session_state.local_logs = st.session_state.local_logs[-500:]
+
+st.markdown(
+    "<div style='font-size:0.75rem;color:#8b949e;margin-bottom:6px;'>실시간 로그</div>",
+    unsafe_allow_html=True,
+)
+log_text = "\n".join(st.session_state.local_logs)
+st.code(log_text[-4000:] if len(log_text) > 4000 else log_text, language="bash")
+
+st.divider()
+
+# ── GitHub Actions 개발 목표 ─────────────────────────────────────────────────
+st.subheader("🎯 GitHub Actions 개발 목표")
 goal_input = st.text_area(
     "goal",
     placeholder=(
@@ -388,3 +598,8 @@ if token_q and repo_q and "/" in repo_q:
         st.caption("PR이 없거나 불러오지 못했습니다.")
 else:
     st.info("설정에서 GitHub Token과 저장소를 입력하면 실행 현황과 PR을 확인할 수 있습니다.")
+
+# ── 로컬 루프 실행 중 자동 갱신 ──────────────────────────────────────────────
+if runner.running:
+    time.sleep(1)
+    st.rerun()
