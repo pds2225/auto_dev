@@ -18,3 +18,22 @@ python scripts/auto_dev_prompt_loop.py --copy     # 생성 후 Windows 클립보
 python scripts/auto_dev_prompt_loop.py --task-id TASK-003  # 특정 TASK 지정
 python scripts/auto_dev_prompt_loop.py --repo D:\other_repo  # 다른 저장소 대상
 ```
+
+## Codex ↔ Claude 파일 기반 왕복 루프
+
+사람이 결과 파일만 저장하면 다음 AI에게 넘길 프롬프트를 자동 생성합니다.
+
+1. Claude 결과를 `D:\walk\claude_result.md` 로 저장
+2. 아래 명령 실행
+   ```bash
+   python scripts/auto_dev_handoff_loop.py --repo D:\walk --from claude --input D:\walk\claude_result.md --copy
+   ```
+3. 복사된 프롬프트를 Codex에 붙여넣기
+4. Codex 결과를 `D:\walk\codex_result.md` 로 저장
+5. 아래 명령 실행
+   ```bash
+   python scripts/auto_dev_handoff_loop.py --repo D:\walk --from codex --input D:\walk\codex_result.md --copy
+   ```
+6. 복사된 프롬프트를 Claude에 붙여넣기
+
+생성 파일: `codex_handoff_YYYYMMDD_HHMMSS.md` 또는 `claude_handoff_YYYYMMDD_HHMMSS.md` (--repo 경로 안에 저장)

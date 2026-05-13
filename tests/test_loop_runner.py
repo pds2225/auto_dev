@@ -487,3 +487,135 @@ def test_retry_escalates_to_bypass_on_perm_error():
     out, code, _ = r._run_codex_with_retries("test")
     assert calls == [False, True]
     assert code == 0
+
+
+# ── approval/sandbox 감지 ─────────────────────────────────────────────────────
+
+def test_classify_approval_error():
+    r = LoopRunner()
+    assert r._classify_codex_error("requires approval for this action", 1) == "perm"
+    assert r._classify_codex_error("approval required", 1) == "perm"
+    assert r._classify_codex_error("needs approval", 1) == "perm"
+
+
+def test_classify_sandbox_error():
+    r = LoopRunner()
+    assert r._classify_codex_error("sandbox violation detected", 1) == "perm"
+    assert r._classify_codex_error("access denied", 1) == "perm"
+
+
+def test_bypass_fails_after_second_perm_logs_skip():
+    """bypass=True 후 perm 재발 시 '건너뜁니다' 로그 남기고 break해야 한다."""
+    calls = []
+
+    class AlwaysPermRunner(LoopRunner):
+        def _run_codex(self, prompt, extra_context="", *, bypass_sandbox=False):
+            calls.append(bypass_sandbox)
+            return "permission denied", 1, False
+
+    r = AlwaysPermRunner()
+    r.project_dir = "/tmp"
+    r._run_codex_with_retries("test")
+    assert calls == [False, True]  # 첫 시도 + bypass 재시도만
+    logs = list(r.log_queue.queue)
+    assert any("건너뜁니다" in line for line in logs), "건너뜁니다 로그가 없다"
+
+
+def test_safety_note_appended_to_codex_prompt():
+    """_run_codex 호출 시 _CODEX_SAFETY_NOTE가 full_prompt에 포함돼야 한다."""
+    captured = {}
+
+    class CaptureRunner(LoopRunner):
+        def _popen_project_command(self, cmd, **kwargs):
+            captured["prompt"] = cmd[-1]  # 마지막 인자가 full_prompt
+
+            class FakeProc:
+                stdout = []
+                stderr = []
+                returncode = 0
+                def wait(self, timeout=None): return 0
+
+            return FakeProc()
+
+    with tempfile.TemporaryDirectory() as tmp:
+        r = CaptureRunner()
+        r.project_dir = tmp
+        r._run_codex("original prompt")
+    assert LoopRunner._CODEX_SAFETY_NOTE in captured.get("prompt", "")
+
+
+# ── 웹 API /api/prompt-generate ───────────────────────────────────────────────
+
+import json as _json
+import sys as _sys
+from pathlib import Path as _Path
+
+_sys.path.insert(0, str(_Path(__file__).resolve().parent.parent / "dashboard"))
+
+import pytest
+
+try:
+    from server import app as _flask_app
+    _HAS_SERVER = True
+except Exception:
+    _HAS_SERVER = False
+
+
+@pytest.fixture()
+def _client():
+    if not _HAS_SERVER:
+        pytest.skip("server import failed")
+    _flask_app.config["TESTING"] = True
+    with _flask_app.test_client() as c:
+        yield c
+
+
+def _pg_post(client, body):
+    return client.post(
+        "/api/prompt-generate",
+        data=_json.dumps(body),
+        content_type="application/json",
+    )
+
+
+def test_api_task_to_claude(_client, tmp_path):
+    """task_to_claude: TASKS.md → auto_prompt_*.md 생성, ok=true"""
+    tasks_md = tmp_path / "TASKS.md"
+    tasks_md.write_text("## PENDING\n- TASK-001: 테스트 작업\n\n## DONE\n", encoding="utf-8")
+    res = _pg_post(_client, {"repo_dir": str(tmp_path), "mode": "task_to_claude"})
+    data = res.get_json()
+    assert data["ok"] is True
+    assert _Path(data["output_file"]).exists()
+    assert "TASK-001" in _Path(data["output_file"]).read_text(encoding="utf-8")
+
+
+def test_api_claude_to_codex(_client, tmp_path):
+    """claude_to_codex: input 파일 → codex_handoff_*.md 생성"""
+    inp = tmp_path / "claude_result.md"
+    inp.write_text("구현 완료.\npytest: 5 passed\n", encoding="utf-8")
+    res = _pg_post(_client, {"repo_dir": str(tmp_path), "mode": "claude_to_codex", "input_file": str(inp)})
+    data = res.get_json()
+    assert data["ok"] is True
+    assert "codex_handoff_" in _Path(data["output_file"]).name
+
+
+def test_api_codex_to_claude(_client, tmp_path):
+    """codex_to_claude: input 파일 → claude_handoff_*.md 생성"""
+    inp = tmp_path / "codex_result.md"
+    inp.write_text("Codex 완료.\n", encoding="utf-8")
+    res = _pg_post(_client, {"repo_dir": str(tmp_path), "mode": "codex_to_claude", "input_file": str(inp)})
+    data = res.get_json()
+    assert data["ok"] is True
+    assert "claude_handoff_" in _Path(data["output_file"]).name
+
+
+def test_api_missing_input_file(_client, tmp_path):
+    """input_file 없으면 ok=false, 오류 메시지 반환"""
+    res = _pg_post(_client, {
+        "repo_dir": str(tmp_path),
+        "mode": "claude_to_codex",
+        "input_file": str(tmp_path / "not_exist.md"),
+    })
+    data = res.get_json()
+    assert data["ok"] is False
+    assert "error" in data
