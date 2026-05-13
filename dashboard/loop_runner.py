@@ -410,9 +410,18 @@ class LoopRunner:
             out.write_text(prompt, encoding="utf-8")
         return str(out)
 
-    _PERM_RE = re.compile(r"permission.denied|access.denied|requires.approval|sandbox.violation", re.I)
+    _PERM_RE = re.compile(
+        r"permission.denied|access.denied|requires.approval|sandbox.violation"
+        r"|approval.required|needs.approval|approval.request",
+        re.I,
+    )
     _AUTH_RE = re.compile(r"\b401\b|unauthorized|invalid.api.key", re.I)
     _RATE_RE = re.compile(r"\b429\b|rate.limit|too.many.requests", re.I)
+
+    _CODEX_SAFETY_NOTE = (
+        "승인 요청이 필요한 작업은 실행하지 말고 BLOCKED로 보고하라. "
+        "네트워크 설치, 외부 다운로드, destructive git 명령, 시스템 경로 수정은 승인 없이 수행하지 마라."
+    )
 
     def _classify_codex_error(self, output: str, returncode: int) -> str:
         """오류 유형 반환: 'perm' | 'auth' | 'rate' | 'other'"""
@@ -427,7 +436,7 @@ class LoopRunner:
     def _run_codex(
         self, prompt: str, extra_context: str = "", *, bypass_sandbox: bool = False
     ) -> tuple[str, int, bool]:
-        full_prompt = prompt
+        full_prompt = prompt + "\n\n---\n\n" + self._CODEX_SAFETY_NOTE
         timeout_sec = get_codex_timeout_sec()
         if extra_context:
             full_prompt += f"\n\n---\n\n{extra_context}"
@@ -540,10 +549,13 @@ class LoopRunner:
                 self._log(f"  ❌ 인증 오류 — 재시도 불가")
                 break
 
-            if error_kind == "perm" and not bypass:
-                self._log("  🔓 권한 오류 → --dangerously-bypass-approvals-and-sandbox 재시도")
-                bypass = True
-                continue
+            if error_kind == "perm":
+                if not bypass:
+                    self._log("  🔓 권한/승인 오류 → --dangerously-bypass-approvals-and-sandbox 재시도")
+                    bypass = True
+                    continue
+                self._log("  ⚠ 승인 필요 또는 권한 문제로 해당 태스크를 건너뜁니다 (bypass 재시도 후에도 실패)")
+                break
 
             if attempt < attempts:
                 if error_kind == "rate":
