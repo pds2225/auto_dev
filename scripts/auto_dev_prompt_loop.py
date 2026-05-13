@@ -46,6 +46,7 @@ def _parse_pending(tasks_md: Path) -> list[tuple[str, str]]:
 
 def _build_prompt(task_id: str, task_desc: str, repo_root: Path) -> str:
     forbidden = "\n".join(f"  - {f}" for f in FORBIDDEN_FILES)
+    branch_name = f"feature/{task_id.lower()}"
     return f"""\
 # Claude Code 자동개발 프롬프트 — {task_id}
 
@@ -55,20 +56,27 @@ def _build_prompt(task_id: str, task_desc: str, repo_root: Path) -> str:
 ## 선택 TASK
 {task_desc}
 
+## 브랜치 (작업 전 실행)
+git checkout -b {branch_name}
+
 ## 준수 규칙 (AGENTS.md)
 - 기존 구조 유지, 최소 변경만 수행한다.
 - 아래 파일은 절대 수정하지 않는다:
 {forbidden}
 - .claude/settings.local.json은 커밋 대상에서 제외한다.
 - main 브랜치에 직접 push 금지.
-- 새 브랜치에서만 작업한다.
+- 새 브랜치에서만 작업한다: {branch_name}
 - PR 생성하지 말고 변경 내용만 보고한다.
 - 무제한 루프 금지. 기본 실행은 1회만 수행한다.
+
+## 기본 검증 명령
+python -m pytest tests/ -q
 
 ## 작업 후 보고 형식
 1. 변경 파일 목록
 2. 검증 명령 및 결과
 3. 변경 내용 요약
+4. TASKS.md: 완료된 항목을 PENDING → DONE 섹션으로 이동
 """
 
 

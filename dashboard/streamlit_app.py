@@ -52,6 +52,13 @@ def _gh_headers(token: str) -> dict:
     }
 
 
+def _github_request(method: str, url: str, **kwargs) -> requests.Response:
+    """GitHub API 호출은 로컬 프록시 환경변수 영향을 받지 않게 보냅니다."""
+    session = requests.Session()
+    session.trust_env = False
+    return session.request(method, url, **kwargs)
+
+
 def _trigger_workflow(token: str, owner: str, repo: str, goal: str, mode: str) -> tuple[bool, str]:
     """GitHub Actions workflow_dispatch를 호출합니다."""
     url = (
@@ -63,7 +70,7 @@ def _trigger_workflow(token: str, owner: str, repo: str, goal: str, mode: str) -
         "inputs": {"goal": goal, "mode": mode},
     }
     try:
-        resp = requests.post(url, json=payload, headers=_gh_headers(token), timeout=15)
+        resp = _github_request("POST", url, json=payload, headers=_gh_headers(token), timeout=15)
         if resp.status_code == 204:
             return True, "GitHub Actions 워크플로우가 성공적으로 트리거되었습니다."
         elif resp.status_code == 404:
@@ -88,7 +95,8 @@ def _get_recent_runs(token: str, owner: str, repo: str, limit: int = 5) -> list[
         "/actions/workflows/auto-dev-loop.yml/runs"
     )
     try:
-        resp = requests.get(
+        resp = _github_request(
+            "GET",
             url, params={"per_page": limit}, headers=_gh_headers(token), timeout=15
         )
         if resp.status_code == 200:
@@ -102,7 +110,8 @@ def _get_recent_prs(token: str, owner: str, repo: str, limit: int = 5) -> list[d
     """최근 PR 목록을 가져옵니다."""
     url = f"https://api.github.com/repos/{owner}/{repo}/pulls"
     try:
-        resp = requests.get(
+        resp = _github_request(
+            "GET",
             url,
             params={"state": "all", "per_page": limit, "sort": "created", "direction": "desc"},
             headers=_gh_headers(token),
@@ -160,7 +169,7 @@ def _get_tasks_queue_summary(token: str, owner: str, repo: str) -> dict | None:
     """
     url = f"https://api.github.com/repos/{owner}/{repo}/contents/TASKS.md"
     try:
-        resp = requests.get(url, headers=_gh_headers(token), timeout=10)
+        resp = _github_request("GET", url, headers=_gh_headers(token), timeout=10)
         if resp.status_code != 200:
             return None
         raw = base64.b64decode(resp.json()["content"]).decode("utf-8")

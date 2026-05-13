@@ -75,3 +75,21 @@ def test_prompt_contains_forbidden_files(tasks_file: Path, tmp_path: Path) -> No
     content = outputs[0].read_text(encoding="utf-8")
     for f in FORBIDDEN_FILES:
         assert f in content, f"{f} 가 프롬프트에 없다"
+
+
+def test_prompt_contains_branch_name(tasks_file: Path, tmp_path: Path) -> None:
+    """e. 생성 프롬프트에 브랜치명 포함"""
+    main(["--repo", str(tmp_path)])
+    outputs = list(tmp_path.glob("auto_prompt_*.md"))
+    assert outputs
+    content = outputs[0].read_text(encoding="utf-8")
+    assert "feature/task-003" in content, "브랜치명이 프롬프트에 없다"
+
+
+def test_prompt_contains_validation_command(tasks_file: Path, tmp_path: Path) -> None:
+    """f. 생성 프롬프트에 기본 검증 명령어 포함"""
+    main(["--repo", str(tmp_path)])
+    outputs = list(tmp_path.glob("auto_prompt_*.md"))
+    assert outputs
+    content = outputs[0].read_text(encoding="utf-8")
+    assert "pytest" in content, "검증 명령어(pytest)가 프롬프트에 없다"
