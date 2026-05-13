@@ -443,9 +443,16 @@ if start_local:
     path_obj = Path(pd)
 
     # 디버깅 로그
+    import sys
+    print(f"[DEBUG] Python 실행 경로: {sys.executable}")
     print(f"[DEBUG] 입력 원본: {repr(local_project_dir)}")
     print(f"[DEBUG] 정규화 후: {repr(pd)}")
     print(f"[DEBUG] exists: {path_obj.exists()}, is_dir: {path_obj.is_dir()}")
+    print(f"[DEBUG] os.path.exists: {os.path.exists(pd)}")
+    try:
+        print(f"[DEBUG] os.listdir: {os.listdir(pd)[:3]}")
+    except Exception as e:
+        print(f"[DEBUG] os.listdir 실패: {e}")
 
     if not pd:
         st.error("프로젝트 경로를 입력하세요.")
