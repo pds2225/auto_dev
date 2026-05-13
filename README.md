@@ -81,19 +81,38 @@
 
 ### 방법 4 — AI끼리 작업 넘기기 (Claude ↔ Codex)
 
-AI가 짠 결과를 다른 AI에게 넘겨 계속 작업시킬 때:
+Claude가 설계·리뷰를 하고 Codex가 로컬에서 코드를 수정하는 왕복 루프입니다.
 
-1. **Claude 결과 저장**: `claude_result.md` 파일로 저장
-2. 아래 명령 실행 → Codex용 지시서가 만들어짐
-   ```powershell
-   python scripts\auto_dev_handoff_loop.py --from claude --input claude_result.md --copy
-   ```
-3. 복사된 내용을 Codex에 붙여넣기
-4. Codex 결과를 `codex_result.md`로 저장
-5. 다시 Claude로 넘길 때:
-   ```powershell
-   python scripts\auto_dev_handoff_loop.py --from codex --input codex_result.md --copy
-   ```
+**한 사이클 흐름**
+
+| 단계 | 입력 파일 | 명령 | 생성 파일 | 다음 행동 |
+|---|---|---|---|---|
+| 1 | - | Claude에게 작업 지시 | `claude_result.md` (수동 저장) | Claude가 설계/리뷰 결과를 파일로 저장 |
+| 2 | `claude_result.md` | `--from claude` | `codex_handoff_*.md` | 생성된 프롬프트를 Codex에 붙여넣기 |
+| 3 | - | Codex에 프롬프트 실행 | `codex_result.md` (수동 저장) | Codex가 코드 수정 후 결과를 파일로 저장 |
+| 4 | `codex_result.md` | `--from codex` | `claude_handoff_*.md` | 생성된 프롬프트를 Claude에 붙여넣기 |
+
+> `--from`은 "누구의 결과를 입력으로 받았는가"가 아니라 **"누구에게 넘길 프롬프트를 만드는가"**를 의미합니다.
+> - `--from claude` → **Codex**가 실행할 프롬프트 생성
+> - `--from codex` → **Claude**가 리뷰할 프롬프트 생성
+
+**예시**
+
+```powershell
+# 1. Claude 결과를 D:\walk\claude_result.md 로 저장한 뒤
+python scripts\auto_dev_handoff_loop.py --repo D:\walk --from claude --input D:\walk\claude_result.md --copy
+# → codex_handoff_YYYYMMDD_HHMMSS.md 생성 + 클립보드 복사
+# → 복사된 내용을 Codex에 붙여넣기
+
+# 2. Codex 결과를 D:\walk\codex_result.md 로 저장한 뒤
+python scripts\auto_dev_handoff_loop.py --repo D:\walk --from codex --input D:\walk\codex_result.md --copy
+# → claude_handoff_YYYYMMDD_HHMMSS.md 생성 + 클립보드 복사
+# → 복사된 내용을 Claude에 붙여넣기
+```
+
+**종료 조건**
+- 테스트가 모두 통과하고 더 이상 개선할 부분이 없으면 종료
+- 같은 실패를 3번 이상 반복하면 중단하고 사람이 개입
 
 ---
 
@@ -160,21 +179,11 @@ python scripts/auto_dev_prompt_loop.py --repo D:\other_repo  # 다른 저장소 
 
 ---
 
-## Codex ↔ Claude 파일 기반 왕복 루프
+## 프롬프트 생성 (auto_dev_prompt_loop)
 
-사람이 결과 파일만 저장하면 다음 AI에게 넘길 프롬프트를 자동 생성합니다.
-
-1. Claude 결과를 `D:\walk\claude_result.md` 로 저장
-2. 아래 명령 실행
-   ```bash
-   python scripts/auto_dev_handoff_loop.py --repo D:\walk --from claude --input D:\walk\claude_result.md --copy
-   ```
-3. 복사된 프롬프트를 Codex에 붙여넣기
-4. Codex 결과를 `D:\walk\codex_result.md` 로 저장
-5. 아래 명령 실행
-   ```bash
-   python scripts/auto_dev_handoff_loop.py --repo D:\walk --from codex --input D:\walk\codex_result.md --copy
-   ```
-6. 복사된 프롬프트를 Claude에 붙여넣기
-
-생성 파일: `codex_handoff_YYYYMMDD_HHMMSS.md` 또는 `claude_handoff_YYYYMMDD_HHMMSS.md` (--repo 경로 안에 저장)
+```bash
+python scripts/auto_dev_prompt_loop.py            # PENDING 첫 TASK → auto_prompt_YYYYMMDD_HHMMSS.md 생성
+python scripts/auto_dev_prompt_loop.py --copy     # 생성 후 Windows 클립보드에 복사
+python scripts/auto_dev_prompt_loop.py --task-id TASK-003  # 특정 TASK 지정
+python scripts/auto_dev_prompt_loop.py --repo D:\other_repo  # 다른 저장소 대상
+```

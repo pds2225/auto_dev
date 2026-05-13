@@ -6,6 +6,8 @@ Use this matrix to rank findings in non-developer terms.
 
 ### CRITICAL
 
+> 사용자 관점: 지금 이 상태로 배포하거나 공유하면 금전 피해, 데이터 유출, 또는 서비스 중단이 발생할 수 있음
+
 The project can fail for users, leak secrets, lose data, or block deployment.
 
 Examples:
@@ -14,6 +16,8 @@ Examples:
 - The main app cannot start, login fails for everyone, or production deployment is broken.
 
 ### HIGH
+
+> 사용자 관점: 주요 기능이 작동하지 않거나 잘못된 결과를 내서 사용자가 신뢰를 잃을 수 있음
 
 Core user workflows can break or produce wrong results.
 
@@ -24,6 +28,8 @@ Examples:
 
 ### MEDIUM
 
+> 사용자 관점: 제품은 돌아가지만 사용자가 혼란스럽거나 불편을 느낄 수 있음
+
 The product works, but users can get confused, blocked, or receive weak output.
 
 Examples:
@@ -32,6 +38,8 @@ Examples:
 - A form allows invalid input and only fails later.
 
 ### LOW
+
+> 사용자 관점: 당장 문제는 없지만 방치하면 나중에 고치기 어려워질 수 있음
 
 Quality, polish, or maintainability issue with limited immediate user impact.
 

@@ -1,10 +1,20 @@
 # Prompt Templates
 
-Use these templates for the selected single task only.
+Use these templates for the selected single task only. Choose the target AI explicitly when the user is coordinating Kimi, Claude, Cursor, and Codex.
+
+## Target AI Selector
+
+- Kimi: diagnosis and idea generation only; no code edits.
+- Claude: review Kimi plans, reduce scope, reason about complex logic, define tests.
+- Cursor: find code locations and make narrow UI or bug patches.
+- Codex: apply local repo changes, run commands, verify, commit, PR, Notion, and skill maintenance.
 
 ## 오류 해결용 구현 프롬프트
 
 ```text
+대상 AI:
+[Cursor / Claude / Codex 중 하나]
+
 역할:
 너는 기존 코드베이스에서 오류 1개만 최소 변경으로 고치는 구현자다.
 
@@ -42,11 +52,15 @@ Use these templates for the selected single task only.
 3. 수정 내용
 4. 테스트 결과
 5. 회귀 위험
+6. 다음 작업 1개
 ```
 
 ## 기능 개선용 구현 프롬프트
 
 ```text
+대상 AI:
+[Cursor / Claude / Codex 중 하나]
+
 역할:
 너는 기존 구조를 유지하면서 사용자 가치가 큰 기능 개선 1개만 구현하는 개발자다.
 
@@ -89,6 +103,9 @@ Use these templates for the selected single task only.
 ## 프론트엔드 개선용 구현 프롬프트
 
 ```text
+대상 AI:
+[Cursor / Codex 중 하나. 화면 구조 판단이 복잡하면 Claude 검토 먼저]
+
 역할:
 너는 기존 화면을 유지하면서 프론트엔드 문제 1개만 개선하는 구현자다.
 
@@ -128,4 +145,5 @@ Use these templates for the selected single task only.
 3. 화면 확인 방법
 4. 테스트 결과
 5. 회귀 위험
+6. 다음 작업 1개
 ```
