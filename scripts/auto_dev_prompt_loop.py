@@ -10,6 +10,7 @@ TASKS.md의 PENDING 태스크를 읽어 Claude Code에 붙여넣을 프롬프트
 from __future__ import annotations
 
 import argparse
+import re
 import sys
 from datetime import datetime
 from pathlib import Path
@@ -41,6 +42,11 @@ def _parse_pending(tasks_md: Path) -> list[tuple[str, str]]:
             raw = line[2:].strip()
             task_id = raw.split(":")[0].strip()
             tasks.append((task_id, raw))
+            continue
+        checkbox_match = re.match(r"^- \[ \] \[([A-Za-z0-9_-]+)\]\s+(.+)$", line.strip())
+        if in_pending and checkbox_match:
+            task_id, title = checkbox_match.groups()
+            tasks.append((task_id, f"[{task_id}] {title.strip()}"))
     return tasks
 
 
