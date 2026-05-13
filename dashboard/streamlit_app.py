@@ -13,6 +13,8 @@ from pathlib import Path
 import requests
 import streamlit as st
 
+DEFAULT_WORKFLOW_REPO = "pds2225/auto_dev"
+
 st.set_page_config(
     page_title="Auto Dev",
     page_icon="🤖",
@@ -74,7 +76,11 @@ def _trigger_workflow(token: str, owner: str, repo: str, goal: str, mode: str) -
         if resp.status_code == 204:
             return True, "GitHub Actions 워크플로우가 성공적으로 트리거되었습니다."
         elif resp.status_code == 404:
-            return False, "저장소 또는 워크플로우 파일을 찾을 수 없습니다. owner/repo와 브랜치를 확인하세요."
+            return False, (
+                f"{owner}/{repo} 저장소에서 auto-dev-loop.yml 워크플로우를 찾을 수 없습니다. "
+                f"이 칸은 작업 대상 저장소가 아니라 워크플로우 실행 저장소입니다. "
+                f"기본값 {DEFAULT_WORKFLOW_REPO}를 사용하세요."
+            )
         elif resp.status_code == 401:
             return False, "인증 실패: GitHub Token을 확인하세요."
         elif resp.status_code == 422:
@@ -228,10 +234,10 @@ with st.expander("⚙️ 설정", expanded=not bool(_get_secret("GITHUB_TOKEN"))
         help="repo · workflow 권한이 있는 Personal Access Token",
     )
     repo_input = st.text_input(
-        "저장소 (owner/repo)",
-        value=_get_secret("GITHUB_REPO", ""),
-        placeholder="예: myname/my-project",
-        help="GitHub 저장소 전체 경로",
+        "워크플로우 저장소 (owner/repo)",
+        value=_get_secret("GITHUB_REPO", DEFAULT_WORKFLOW_REPO),
+        placeholder=DEFAULT_WORKFLOW_REPO,
+        help="auto-dev-loop.yml이 있는 저장소입니다. 작업 대상 저장소가 아닙니다.",
     )
 
 # ── 개발 목표 입력 ────────────────────────────────────────────────────────────
