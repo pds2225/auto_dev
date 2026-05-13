@@ -189,9 +189,16 @@ class LoopRunner:
 
     def _get_task_file_path(self) -> Path:
         project_root = Path(self.project_dir)
+        if not project_root.exists():
+            return project_root / TASK_FILE_CANDIDATES[0]
+        exact_names = {p.name: p for p in project_root.iterdir() if p.is_file()}
         for name in TASK_FILE_CANDIDATES:
-            candidate = project_root / name
-            if candidate.exists():
+            if name in exact_names:
+                return exact_names[name]
+        lower_names = {p.name.lower(): p for p in exact_names.values()}
+        for name in TASK_FILE_CANDIDATES:
+            candidate = lower_names.get(name.lower())
+            if candidate is not None:
                 return candidate
         return project_root / TASK_FILE_CANDIDATES[0]
 
@@ -240,9 +247,23 @@ class LoopRunner:
         task_id = match.group(1) or match.group(2)
         return int(task_id) if task_id else None
 
+    def _parse_pending_task_line(self, line: str) -> str | None:
+        stripped = line.strip()
+        colon_match = re.match(r"^- (TASK-[\w-]+):\s*(.+)$", stripped)
+        if colon_match:
+            return f"[{colon_match.group(1)}] {colon_match.group(2).strip()}"
+        checkbox_match = re.match(r"^- \[ \] \[([A-Za-z0-9_-]+)\]\s+(.+)$", stripped)
+        if checkbox_match:
+            task_id, title = checkbox_match.groups()
+            return f"[{task_id}] {title.strip()}"
+        return None
+
     def _build_task_selection(self, day_label: str, task: str, task_type: str, reason: str) -> dict[str, str]:
         task_id_num = self._extract_generated_task_id(task)
         task_id = f"TASK-{task_id_num:02d}" if task_id_num is not None else ""
+        if not task_id:
+            task_id_match = re.match(r"^\[([A-Za-z0-9_-]+)\]", task)
+            task_id = task_id_match.group(1) if task_id_match else ""
         return {
             "selected_task_text": self._format_task_display(day_label, task),
             "selected_task_raw": task,
@@ -298,9 +319,8 @@ class LoopRunner:
             if first_entry is None and lowest_generated_entry is None:
                 pending = self._get_pending_section(text)
                 for line in pending.splitlines():
-                    pm = re.match(r"^- (TASK-[\w-]+):\s*(.+)$", line.strip())
-                    if pm:
-                        task = f"[{pm.group(1)}] {pm.group(2).strip()}"
+                    task = self._parse_pending_task_line(line)
+                    if task:
                         generated_task_id = self._extract_generated_task_id(task)
                         if generated_task_id is not None and (
                             lowest_generated_id is None or generated_task_id < lowest_generated_id
@@ -356,20 +376,21 @@ class LoopRunner:
             self._log(f"⚠ {tasks_path.name} 업데이트 실패: {e}")
 
     def _move_pending_task_to_done(self, text: str, task: str) -> str:
-        colon_id = re.sub(r"^\[(TASK-[\w-]+)\]\s*", r"\1: ", task)
-        if colon_id == task:
+        task_match = re.match(r"^\[([A-Za-z0-9_-]+)\]\s*(.+)$", task.strip())
+        if not task_match:
             return text
-        task_key = colon_id.split(":")[0].strip()
-        line_re = re.compile(rf"^- {re.escape(task_key)}:[^\n]*\n?", re.MULTILINE)
+        task_key, task_desc = task_match.groups()
+        checkbox_re = rf"^- \[ \] \[{re.escape(task_key)}\][^\n]*\n?"
+        colon_re = rf"^- {re.escape(task_key)}:[^\n]*\n?"
+        line_re = re.compile(f"(?:{checkbox_re}|{colon_re})", re.MULTILINE)
         if not line_re.search(text):
             return text
         updated = line_re.sub("", text, count=1)
         updated = re.sub(r"\n{3,}", "\n\n", updated)
-        done_m = re.search(r"^## DONE\s*$", updated, flags=re.MULTILINE)
+        done_m = re.search(r"^## Done\s*$|^## DONE\s*$", updated, flags=re.MULTILINE)
         if done_m:
             timestamp = datetime.now().strftime("%Y-%m-%d")
-            task_desc = colon_id.split(":", 1)[1].strip() if ":" in colon_id else ""
-            new_line = f"\n- {task_key}: {task_desc} ({timestamp})"
+            new_line = f"\n- [x] [{task_key}] {task_desc.strip()} ({timestamp})"
             updated = updated[:done_m.end()] + new_line + updated[done_m.end():]
         return updated
 
