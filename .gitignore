@@ -13,4 +13,6 @@ tests/.tmp/
 
 .git-auto-backup.log
 auto_prompt_*.md
-
+actions_log.txt
+.streamlit/
+.claude/settings.local.json
