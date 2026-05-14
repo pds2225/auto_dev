@@ -1,6 +1,7 @@
-# Failed Tasks
+# 다시 확인이 필요한 할 일
 
-> 실패한 TASK 기록입니다. `scripts/auto_dev_queue.py`가 자동으로 기록합니다.
-> 각 항목을 검토 후 TASKS.md의 PENDING 섹션에 재추가하거나 수동으로 처리하세요.
+> 자동 처리에 실패한 할 일 기록입니다. `scripts/auto_dev_queue.py`가 자동으로 기록합니다.
+> 각 항목을 검토한 뒤, 다시 시도할 일은 TASKS.md의 `PENDING` 섹션에 다시 추가하세요.
+> 쉽게 말하면 `PENDING`은 "아직 시작 전인 할 일 칸"입니다.
 
 <!-- 실패 기록은 아래에 자동 추가됩니다 -->

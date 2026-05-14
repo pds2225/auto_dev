@@ -295,11 +295,11 @@ def prompt_generate():
                 return jsonify({"ok": False, "error": f"TASKS.md가 없습니다: {tasks_md}"}), 400
             pending = _parse_pending(tasks_md)
             if not pending:
-                return jsonify({"ok": False, "error": "PENDING 태스크가 없습니다."}), 400
+                return jsonify({"ok": False, "error": "아직 시작 전인 할 일(PENDING)이 없습니다."}), 400
             if task_id:
                 matched = [(tid, desc) for tid, desc in pending if tid == task_id]
                 if not matched:
-                    return jsonify({"ok": False, "error": f"{task_id}를 PENDING에서 찾을 수 없습니다."}), 400
+                    return jsonify({"ok": False, "error": f"{task_id}를 아직 시작 전인 할 일(PENDING)에서 찾을 수 없습니다."}), 400
                 sel_id, sel_desc = matched[0]
             else:
                 sel_id, sel_desc = pending[0]

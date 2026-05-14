@@ -213,7 +213,7 @@
         <option value="claude_to_codex">Claude 결과 → Codex 프롬프트</option>
         <option value="codex_to_claude">Codex 결과 → Claude 프롬프트</option>
       </select>
-      <input id="pgTaskId" class="sf-input" type="text" placeholder="TASK-ID (비우면 첫 PENDING 자동 선택)" />
+      <input id="pgTaskId" class="sf-input" type="text" placeholder="할 일 ID (비우면 첫 미처리 항목 자동 선택)" />
       <input id="pgInput" class="sf-input" type="text" placeholder="입력 파일 경로 (예: D:\walk\claude_result.md)" style="display:none" />
       <button class="btn-primary" onclick="generatePrompt()" style="flex:none">생성</button>
       <div id="pgResult" style="display:none;flex-direction:column;gap:8px">
@@ -233,11 +233,11 @@
     </div>
   </div>
 
-  <!-- 프로젝트 큐 -->
+  <!-- 프로젝트 대기 목록 -->
   <div class="card">
-    <div class="section-title">프로젝트 큐 <span id="queueCount" style="color:#58a6ff"></span></div>
+    <div class="section-title">프로젝트 대기 목록 <span id="queueCount" style="color:#58a6ff"></span></div>
     <div class="path-row" style="margin-bottom:10px">
-      <input id="queueInput" type="text" placeholder="큐에 추가할 프로젝트 경로" />
+      <input id="queueInput" type="text" placeholder="대기 목록에 추가할 프로젝트 경로" />
       <button onclick="queueAdd()" style="padding:8px 16px;background:#1a7f37;color:#fff;border:none;border-radius:8px;cursor:pointer;font-size:0.85rem">추가</button>
     </div>
     <div id="queueList" style="font-size:0.82rem;color:#8b949e;line-height:1.8"></div>
@@ -245,16 +245,16 @@
 
   <!-- 메인 토글 -->
   <div class="card">
-    <div class="section-title">루프 제어 · ON 누르면 위 경로 프로젝트의 TASKS.md를 자동 실행합니다</div>
+    <div class="section-title">자동개발 시작/중지 · ON 누르면 위 프로젝트의 할 일 목록을 실행합니다</div>
     <div class="toggle-wrap">
       <button id="toggleBtn" class="off">OFF</button>
       <div id="stageBadge" class="badge idle"><span class="dot"></span> 대기 중</div>
     </div>
     <hr />
-    <div class="task-label">현재 태스크</div>
+    <div class="task-label">현재 처리 중인 할 일</div>
     <div id="taskText" class="task-text">—</div>
     <div id="taskMeta" class="task-meta">ID: — | Type: — | Reason: —</div>
-    <div class="task-note">선택 기준: generated TASK-xx 우선, 없으면 Active의 첫 일반 미완료를 fallback 선택.</div>
+    <div class="task-note">선택 기준: 자동 생성된 할 일을 먼저 처리하고, 없으면 일반 미완료 항목을 선택합니다.</div>
   </div>
 
   <!-- 프로젝트 상태 -->
@@ -281,9 +281,9 @@
     <div id="snapshotNote" style="font-size:0.82rem;color:#8b949e;line-height:1.6">선택된 프로젝트 기준으로 Git 상태를 불러옵니다.</div>
   </div>
 
-  <!-- 태스크 목록 -->
+  <!-- 할 일 목록 -->
   <div class="card">
-    <div class="section-title">태스크 진행률 <span id="taskProgress" style="color:#58a6ff"></span></div>
+    <div class="section-title">할 일 진행률 <span id="taskProgress" style="color:#58a6ff"></span></div>
     <div id="taskList" style="font-size:0.82rem;line-height:1.8;max-height:200px;overflow-y:auto"></div>
   </div>
 
@@ -437,7 +437,7 @@
       try {
         const res = await fetch('/api/tasks');
         const data = await res.json();
-        if (data.total === 0) { taskList.innerHTML = '<span style="color:#8b949e">TASK 파일 없음</span>'; return; }
+        if (data.total === 0) { taskList.innerHTML = '<span style="color:#8b949e">할 일 파일 없음</span>'; return; }
         taskProgress.textContent = `${data.done.length} / ${data.total} 완료`;
         const currentTask = document.getElementById('taskText').textContent;
         taskList.innerHTML = [
