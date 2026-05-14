@@ -239,9 +239,20 @@ def _load_queue_state() -> dict | None:
         return None
 
 
+def _friendly_task_status(status: str) -> str:
+    labels = {
+        "PENDING": "아직 시작 전(PENDING)",
+        "RUNNING": "처리 중(RUNNING)",
+        "DONE": "완료(DONE)",
+        "FAILED": "다시 확인 필요(FAILED)",
+        "BLOCKED": "사람 확인 필요(BLOCKED)",
+    }
+    return labels.get(status, status or "-")
+
+
 def _render_queue_state_card() -> None:
     """auto_dev_state.json 기반 로컬 상태 카드를 렌더링합니다."""
-    st.subheader("🖥️ Auto Dev Queue 상태")
+    st.subheader("🖥️ 자동개발 할 일 상태")
     data = _load_queue_state()
 
     if data == {}:
@@ -257,7 +268,7 @@ def _render_queue_state_card() -> None:
     task_id = last_task.get("id", "-")
     last_run = data.get("last_run") or "-"
     extra = f" | 차단: {last_task['reason']}" if task_status == "BLOCKED" and last_task.get("reason") else ""
-    st.info(f"**{task_id}** | {task_status} | {last_run}{extra}")
+    st.info(f"**{task_id}** | {_friendly_task_status(task_status)} | {last_run}{extra}")
 
 
 def _get_tasks_queue_summary(token: str, owner: str, repo: str) -> dict | None:
@@ -406,7 +417,7 @@ with st.expander("⚙️ 설정", expanded=not bool(_get_secret("GITHUB_TOKEN"))
 
 # ── 로컬 자동개발 루프 ────────────────────────────────────────────────────────
 st.subheader("🖥️ 로컬 자동개발 루프")
-st.caption("이 PC에서 TASKS.md를 읽고 직접 코드 개발을 진행합니다.")
+st.caption("이 PC에서 TASKS.md의 할 일 목록을 읽고 직접 코드 개발을 진행합니다.")
 st.warning(
     "Flask 서버(server.py)와 동시에 실행하면 러너/파일 충돌 위험이 있습니다. "
     "둘 중 하나만 켜두세요.",
@@ -500,8 +511,8 @@ if runner.current_task_id:
 if runner.current_stage == "error":
     st.error("루프가 오류로 중단되었습니다. 로그를 확인하세요.", icon="⚠️")
 
-# 프로젝트 큐
-with st.expander("📂 프로젝트 큐", expanded=False):
+# 프로젝트 대기 목록
+with st.expander("📂 프로젝트 대기 목록", expanded=False):
     q = _read_queue()
     st.caption(f"대기 중: **{len(q)}개**")
     for idx, qpath in enumerate(q, 1):
@@ -514,14 +525,14 @@ with st.expander("📂 프로젝트 큐", expanded=False):
                 _write_queue(new_q)
                 st.rerun()
     new_q_path = st.text_input("추가할 경로", placeholder=r"예: D:\my-project", key="new_q_path")
-    if st.button("큐에 추가", key="add_q"):
+    if st.button("대기 목록에 추가", key="add_q"):
         nqp = new_q_path.strip()
         if nqp and Path(nqp).is_dir() and nqp not in q:
             q.append(nqp)
             _write_queue(q)
             st.rerun()
         elif nqp in q:
-            st.warning("이미 큐에 있습니다.")
+            st.warning("이미 대기 목록에 있습니다.")
         elif nqp:
             st.error("유효하지 않은 경로입니다.")
 
@@ -694,30 +705,30 @@ if token_q and repo_q and "/" in repo_q:
         if st.button("🔄 새로고침", use_container_width=True):
             st.rerun()
 
-    # ── 큐 현황 요약 카드 ──────────────────────────────────────────────────────
-    st.subheader("📋 큐 현황")
-    with st.spinner("큐 상태 불러오는 중..."):
+    # ── 할 일 현황 요약 카드 ──────────────────────────────────────────────────
+    st.subheader("📋 할 일 현황")
+    with st.spinner("할 일 상태 불러오는 중..."):
         queue_status = _get_tasks_queue_summary(token_q, owner_q, repo_name_q)
 
     if queue_status is not None:
         c1, c2, c3, c4 = st.columns(4)
         with c1:
-            st.metric("⏳ PENDING", queue_status.get("pending", 0))
+            st.metric("⏳ 시작 전", queue_status.get("pending", 0))
         with c2:
-            st.metric("🔄 RUNNING", queue_status.get("running", 0))
+            st.metric("🔄 처리 중", queue_status.get("running", 0))
         with c3:
             failed = queue_status.get("failed", 0)
-            st.metric("❌ FAILED", failed)
+            st.metric("❌ 다시 확인", failed)
         with c4:
             blocked = queue_status.get("blocked", 0)
-            st.metric("⛔ BLOCKED", blocked)
+            st.metric("⛔ 사람 확인", blocked)
         if failed > 0 or blocked > 0:
             st.warning(
-                f"FAILED {failed}개 / BLOCKED {blocked}개 — "
+                f"다시 확인 {failed}개 / 사람 확인 {blocked}개 — "
                 "TASKS.md 또는 GitHub Actions 로그를 확인하세요."
             )
     else:
-        st.caption("큐 현황을 불러오지 못했습니다.")
+        st.caption("할 일 현황을 불러오지 못했습니다.")
 
     st.divider()
 

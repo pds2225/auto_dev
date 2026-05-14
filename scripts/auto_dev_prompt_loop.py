@@ -15,6 +15,8 @@ import sys
 from datetime import datetime
 from pathlib import Path
 
+AUTO_DEV_ROOT = Path(__file__).resolve().parent.parent
+
 # ── 수정 금지 파일 목록 (AGENTS.md 섹션 2 기준) ─────────────────────────────
 FORBIDDEN_FILES = [
     ".github/workflows/*.yml",
@@ -25,6 +27,13 @@ FORBIDDEN_FILES = [
     "AGENTS.md",
     "RULES.md",
 ]
+
+
+def _read_shared_claude_guidelines() -> str:
+    shared = AUTO_DEV_ROOT / "CLAUDE.md"
+    if not shared.exists():
+        return ""
+    return shared.read_text(encoding="utf-8", errors="replace").strip()
 
 
 def _parse_pending(tasks_md: Path) -> list[tuple[str, str]]:
@@ -53,6 +62,12 @@ def _parse_pending(tasks_md: Path) -> list[tuple[str, str]]:
 def _build_prompt(task_id: str, task_desc: str, repo_root: Path) -> str:
     forbidden = "\n".join(f"  - {f}" for f in FORBIDDEN_FILES)
     branch_name = f"feature/{task_id.lower()}"
+    shared_rules = _read_shared_claude_guidelines()
+    shared_block = f"""\
+## 공통 작업 지침 (CLAUDE.md)
+{shared_rules}
+
+""" if shared_rules else ""
     return f"""\
 # Claude Code 자동개발 프롬프트 — {task_id}
 
@@ -65,7 +80,7 @@ def _build_prompt(task_id: str, task_desc: str, repo_root: Path) -> str:
 ## 브랜치 (작업 전 실행)
 git checkout -b {branch_name}
 
-## 준수 규칙 (AGENTS.md)
+{shared_block}## 준수 규칙 (AGENTS.md)
 - 기존 구조 유지, 최소 변경만 수행한다.
 - 아래 파일은 절대 수정하지 않는다:
 {forbidden}

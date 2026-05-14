@@ -18,6 +18,8 @@ from pathlib import Path
 if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 
+AUTO_DEV_ROOT = Path(__file__).resolve().parent.parent
+
 FORBIDDEN_FILES = [
     ".github/workflows/*.yml",
     "scripts/run_auto_dev_once.py",
@@ -29,6 +31,13 @@ FORBIDDEN_FILES = [
 ]
 
 _FORBIDDEN_BLOCK = "\n".join(f"  - {f}" for f in FORBIDDEN_FILES)
+
+
+def _read_shared_claude_guidelines() -> str:
+    shared = AUTO_DEV_ROOT / "CLAUDE.md"
+    if not shared.exists():
+        return ""
+    return shared.read_text(encoding="utf-8", errors="replace").strip()
 
 
 def _read_optional(path: Path) -> str:
@@ -51,6 +60,12 @@ def _build_codex_prompt(
     tasks_summary: str,
     agents_summary: str,
 ) -> str:
+    shared_rules = _read_shared_claude_guidelines()
+    shared_block = f"""\
+## 공통 작업 지침 (CLAUDE.md)
+{shared_rules}
+
+""" if shared_rules else ""
     return f"""\
 # Codex 핸드오프 프롬프트 (Claude 결과 → Codex 작업)
 
@@ -69,7 +84,7 @@ def _build_codex_prompt(
 ## AGENTS.md 규칙 요약
 {_summarize(agents_summary, 20) if agents_summary else "(AGENTS.md 없음)"}
 
-## Codex가 해야 할 일
+{shared_block}## Codex가 해야 할 일
 1. 위 Claude 결과를 검토하고 저장소에 실제 변경을 구현한다.
 2. 기존 구조를 최대한 유지하며 최소 변경만 수행한다.
 3. 아래 파일은 절대 수정하지 않는다:
@@ -98,6 +113,12 @@ def _build_claude_prompt(
     tasks_summary: str,
     agents_summary: str,
 ) -> str:
+    shared_rules = _read_shared_claude_guidelines()
+    shared_block = f"""\
+## 공통 작업 지침 (CLAUDE.md)
+{shared_rules}
+
+""" if shared_rules else ""
     return f"""\
 # Claude 핸드오프 프롬프트 (Codex 결과 → Claude 리뷰/개선)
 
@@ -116,7 +137,7 @@ def _build_claude_prompt(
 ## AGENTS.md 규칙 요약
 {_summarize(agents_summary, 20) if agents_summary else "(AGENTS.md 없음)"}
 
-## Claude가 해야 할 일
+{shared_block}## Claude가 해야 할 일
 1. Codex가 구현한 결과를 리뷰하고 문제점을 파악한다.
 2. 예외 처리·엣지 케이스·테스트 보강을 중심으로 개선한다.
 3. 전면 재작성 금지. 구조 개선과 버그 수정만 수행한다.

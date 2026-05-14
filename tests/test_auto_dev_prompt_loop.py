@@ -93,3 +93,13 @@ def test_prompt_contains_validation_command(tasks_file: Path, tmp_path: Path) ->
     assert outputs
     content = outputs[0].read_text(encoding="utf-8")
     assert "pytest" in content, "검증 명령어(pytest)가 프롬프트에 없다"
+
+
+def test_prompt_contains_shared_claude_guidelines(tasks_file: Path, tmp_path: Path) -> None:
+    """g. 생성 프롬프트에 공통 CLAUDE 지침 포함"""
+    main(["--repo", str(tmp_path)])
+    outputs = list(tmp_path.glob("auto_prompt_*.md"))
+    assert outputs
+    content = outputs[0].read_text(encoding="utf-8")
+    assert "공통 작업 지침 (CLAUDE.md)" in content
+    assert "Windows PowerShell" in content

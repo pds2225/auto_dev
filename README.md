@@ -1,6 +1,6 @@
 # auto_dev
 
-자동 개발 루프 — TASKS.md에 작업을 추가하면 AI가 순차적으로 처리합니다.
+자동 개발 루프 — TASKS.md에 할 일을 적어두면 AI가 순서대로 처리합니다.
 
 > **비개발자도 사용 가능합니다.** 복잡한 설정 없이 메모장과 웹브라우저만으로 AI에게 개발을 맡길 수 있습니다.
 
@@ -26,6 +26,7 @@
    ```
    - TASK-100: 로그인 버튼 디자인 개선
    ```
+   - 쉽게 말하면 `PENDING`은 **아직 시작 전인 할 일 칸**입니다.
 3. **PowerShell** 실행 후 아래 명령 입력:
    ```powershell
    cd D:\auto_dev
@@ -68,14 +69,24 @@
 
 ---
 
-### 방법 3 — TASKS.md 큐를 자동으로 처리하기
+### 방법 3 — TASKS.md 할 일 목록을 자동으로 처리하기
 
 여러 개의 할 일을 한 번에 처리하고 싶을 때:
 
-1. `TASKS.md` 파일을 여러 개의 TASK를 `## PENDING` 아래에 추가
+1. `TASKS.md` 파일에 여러 개의 할 일을 `## PENDING` 아래에 추가
 2. GitHub Actions → **"Auto Dev Queue"** 실행
 3. AI가 위에서부터 하나씩 자동으로 처리하고, 완료된 것은 `## DONE`으로 옮김
 4. 코드 변경이 있으면 **자동으로 PR 생성**
+
+상태 이름은 아래처럼 이해하면 됩니다:
+
+| 화면/파일에 보이는 이름 | 쉬운 뜻 |
+|---|---|
+| `PENDING` | 아직 시작 전인 할 일 |
+| `RUNNING` | 지금 처리 중인 일 |
+| `DONE` | 처리 완료 |
+| `FAILED` | 자동 처리 실패, 다시 확인 필요 |
+| `BLOCKED` | API 키/권한처럼 사람이 먼저 해결해야 함 |
 
 ---
 
@@ -118,7 +129,7 @@ python scripts\auto_dev_handoff_loop.py --repo D:\walk --from codex --input D:\w
 
 ### 방법 5 — 새 프로젝트 기획서 자동 생성
 
-아이디어만 있으면 개발 기획서와 태스크 목록을 자동으로 만들어줍니다:
+아이디어만 있으면 개발 기획서와 할 일 목록을 자동으로 만들어줍니다:
 
 ```powershell
 python ai_project_scaffold_generator.py
@@ -171,9 +182,9 @@ GitHub 웹사이트에서 설정합니다:
 ## 프롬프트 생성 (auto_dev_prompt_loop)
 
 ```bash
-python scripts/auto_dev_prompt_loop.py            # PENDING 첫 TASK → auto_prompt_YYYYMMDD_HHMMSS.md 생성
+python scripts/auto_dev_prompt_loop.py            # 첫 번째 미처리 할 일(PENDING) → auto_prompt_YYYYMMDD_HHMMSS.md 생성
 python scripts/auto_dev_prompt_loop.py --copy     # 생성 후 Windows 클립보드에 복사
-python scripts/auto_dev_prompt_loop.py --task-id TASK-003  # 특정 TASK 지정
+python scripts/auto_dev_prompt_loop.py --task-id TASK-003  # 특정 할 일 지정
 python scripts/auto_dev_prompt_loop.py --repo D:\other_repo  # 다른 저장소 대상
 ```
 
@@ -182,8 +193,8 @@ python scripts/auto_dev_prompt_loop.py --repo D:\other_repo  # 다른 저장소 
 ## 프롬프트 생성 (auto_dev_prompt_loop)
 
 ```bash
-python scripts/auto_dev_prompt_loop.py            # PENDING 첫 TASK → auto_prompt_YYYYMMDD_HHMMSS.md 생성
+python scripts/auto_dev_prompt_loop.py            # 첫 번째 미처리 할 일(PENDING) → auto_prompt_YYYYMMDD_HHMMSS.md 생성
 python scripts/auto_dev_prompt_loop.py --copy     # 생성 후 Windows 클립보드에 복사
-python scripts/auto_dev_prompt_loop.py --task-id TASK-003  # 특정 TASK 지정
+python scripts/auto_dev_prompt_loop.py --task-id TASK-003  # 특정 할 일 지정
 python scripts/auto_dev_prompt_loop.py --repo D:\other_repo  # 다른 저장소 대상
 ```
