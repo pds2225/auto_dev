@@ -369,7 +369,8 @@ def test_build_codex_command_default():
     r = LoopRunner()
     r.project_dir = "/tmp/proj"
     cmd = r._build_codex_command("hello", "/tmp/out.txt")
-    assert cmd[:2] == ["codex", "exec"]
+    assert Path(cmd[0]).name.lower() in {"codex", "codex.cmd", "codex.exe"}
+    assert cmd[1] == "exec"
     assert "--full-auto" in cmd
     assert "--sandbox" not in cmd
     assert "--ephemeral" in cmd
