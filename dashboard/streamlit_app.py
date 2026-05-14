@@ -423,7 +423,7 @@ local_project_dir = st.text_input(
 col_start, col_stop = st.columns(2)
 with col_start:
     start_local = st.button(
-        "▶️ 로컬 루프 시작",
+        "▶️ 개발시작",
         type="primary",
         use_container_width=True,
         disabled=runner.running,

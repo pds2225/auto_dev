@@ -2,6 +2,7 @@ import logging
 import os
 import re
 import shlex
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -53,6 +54,15 @@ def get_codex_timeout_sec() -> int:
 
 def get_claude_timeout_sec() -> int:
     return get_codex_timeout_sec()
+
+
+def resolve_codex_executable() -> str:
+    return (
+        shutil.which("codex.cmd")
+        or shutil.which("codex.exe")
+        or shutil.which("codex")
+        or "codex"
+    )
 
 
 def get_codex_retry_count() -> int:
@@ -405,7 +415,7 @@ class LoopRunner:
     def _build_codex_command(
         self, full_prompt: str, last_message_path: str, *, bypass_sandbox: bool = False
     ) -> list[str]:
-        cmd = ["codex", "exec"]
+        cmd = [resolve_codex_executable(), "exec"]
         if bypass_sandbox:
             cmd.append("--dangerously-bypass-approvals-and-sandbox")
         else:
@@ -577,7 +587,7 @@ class LoopRunner:
         except FileNotFoundError:
             saved = self._save_prompt_fallback(full_prompt)
             self._log(f"⚠ Codex CLI 없음 → 프롬프트 저장: {saved}")
-            return f"[FALLBACK] 프롬프트 저장됨: {saved}", 0, False
+            return f"[FALLBACK] 프롬프트 저장됨: {saved}", 1, False
         except Exception as e:
             self._log(f"❌ Codex 호출 실패: {e}")
             saved = self._save_prompt_fallback(full_prompt)
@@ -1166,7 +1176,9 @@ def run_self_tests():
 
     runner = LoopRunner()
     command = runner._build_codex_command("sample prompt", "last-message.txt")
-    assert command[:2] == ["codex", "exec"]
+    assert command[0]
+    assert Path(command[0]).name.lower() in {"codex", "codex.cmd", "codex.exe"}
+    assert command[1] == "exec"
     assert "--full-auto" in command
     assert "--sandbox" not in command
     assert "--ephemeral" in command
@@ -1493,8 +1505,8 @@ def run_self_tests():
         assert len(calls) == 2
         assert calls[0]["cwd"] == tmp
         assert calls[1]["cwd"] == tmp
-        assert calls[0]["cmd"][0] == "codex"
-        assert calls[1]["cmd"][0] == "codex"
+        assert Path(calls[0]["cmd"][0]).name.lower() in {"codex", "codex.cmd", "codex.exe"}
+        assert Path(calls[1]["cmd"][0]).name.lower() in {"codex", "codex.cmd", "codex.exe"}
 
     # ── 단일 실행 보장 ───────────────────────────────────────────────────────
     class BlockingRunner(LoopRunner):
