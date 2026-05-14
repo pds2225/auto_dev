@@ -111,3 +111,12 @@ def test_copy_flag_not_required_for_file_creation(tmp_path: Path, codex_input: P
     assert rc == 0
     outputs = list(tmp_path.glob("claude_handoff_*.md"))
     assert outputs
+
+
+def test_prompt_contains_shared_claude_guidelines(tmp_path: Path, claude_input: Path) -> None:
+    """공통 CLAUDE 지침이 핸드오프 프롬프트에 포함된다"""
+    main(["--repo", str(tmp_path), "--from", "claude", "--input", str(claude_input)])
+    out = next(tmp_path.glob("codex_handoff_*.md"))
+    content = out.read_text(encoding="utf-8")
+    assert "공통 작업 지침 (CLAUDE.md)" in content
+    assert "Windows PowerShell" in content
