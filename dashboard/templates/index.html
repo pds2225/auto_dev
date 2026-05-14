@@ -245,6 +245,7 @@
 
   <!-- 메인 토글 -->
   <div class="card">
+    <div class="section-title">루프 제어 · ON 누르면 위 경로 프로젝트의 TASKS.md를 자동 실행합니다</div>
     <div class="toggle-wrap">
       <button id="toggleBtn" class="off">OFF</button>
       <div id="stageBadge" class="badge idle"><span class="dot"></span> 대기 중</div>
@@ -310,7 +311,7 @@
 
     const STAGE_LABELS = {
       idle:      { label: '대기 중',      cls: 'idle',      pulse: false },
-      hardening: { label: '🔨 하드닝 중', cls: 'hardening', pulse: true  },
+      hardening: { label: '🔨 Codex 실행 중 (코드 작성)', cls: 'hardening', pulse: true  },
       testing:   { label: '🧪 테스트 중', cls: 'testing',   pulse: true  },
       debug:     { label: '🐛 디버그 중', cls: 'debug',     pulse: true  },
       done:      { label: '✅ 완료',      cls: 'done',      pulse: false },
@@ -328,7 +329,7 @@
       const div = document.createElement('div');
       div.className = 'log-line' +
         (line.includes('✅') || line.includes('통과') ? ' ok' : '') +
-        (line.includes('⚠') || line.includes('오류') || line.includes('실패') ? ' err' : '') +
+        (line.includes('⚠') || line.includes('오류') || line.includes('실패') || line.includes('Codex CLI 없음') ? ' err' : '') +
         (line.includes('📌') || line.includes('🔨') || line.includes('🧪') || line.includes('🐛') ? ' warn' : '');
       div.textContent = line;
       logBox.appendChild(div);
