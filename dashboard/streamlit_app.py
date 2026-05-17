@@ -411,6 +411,16 @@ if "scheduler_started" not in st.session_state:
 st.title("🤖 Auto Dev")
 st.caption("GitHub Actions 자동개발 대시보드")
 
+# 통계 카드
+try:
+    from log_analyzer import analyze_runner_log, get_weekly_summary
+    log_path = Path(__file__).parent / "runner.log"
+    stats = analyze_runner_log(log_path)
+    if stats["total_tasks"] > 0:
+        st.info(f"📊 {get_weekly_summary(stats)}")
+except Exception:
+    pass
+
 st.divider()
 
 # ── 설정 ─────────────────────────────────────────────────────────────────────

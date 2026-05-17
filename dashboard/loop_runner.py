@@ -96,6 +96,7 @@ class LoopRunner:
         self.log_queue: Queue = Queue()
         self._thread: threading.Thread | None = None
         self._stop_event = threading.Event()
+        self.current_task_start: datetime | None = None
 
     def start(self, project_dir: str):
         normalized_project_dir = str(Path(project_dir))
@@ -1124,6 +1125,8 @@ class LoopRunner:
                     f"reason={self.selection_reason} "
                     f"section={self.selected_from_section}"
                 )
+                self.current_task_start = datetime.now()
+                self._log(f"[START] task={display_task} ts={self.current_task_start.isoformat()}")
                 self._log(f"\n📌 태스크: {display_task}")
 
                 # ── 0단계: 하드닝 전 기준 테스트 ───────────────────────────
@@ -1167,6 +1170,8 @@ class LoopRunner:
                 self._log(f"  📊 하드닝 효과: [{pre_summary}] → [{post_summary}]")
 
                 if passed:
+                    duration = (datetime.now() - self.current_task_start).total_seconds() if self.current_task_start else 0.0
+                    self._log(f"[DONE] task={task} duration_sec={duration:.1f} status=passed")
                     self._log("✅ 테스트 통과!")
                     self._mark_task_done(task)
                     self._log(f"  → [{task}] 완료 처리")
@@ -1206,11 +1211,15 @@ class LoopRunner:
                     self._log(f"  {line}")
 
                 if passed:
+                    duration = (datetime.now() - self.current_task_start).total_seconds() if self.current_task_start else 0.0
+                    self._log(f"[DONE] task={task} duration_sec={duration:.1f} status=passed")
                     self._log("✅ 재테스트 통과!")
                     self._mark_task_done(task)
                     self._log(f"  → [{task}] 완료 처리")
                 else:
                     if CONTINUE_ON_TEST_FAILURE:
+                        duration = (datetime.now() - self.current_task_start).total_seconds() if self.current_task_start else 0.0
+                        self._log(f"[DONE] task={task} duration_sec={duration:.1f} status=failed")
                         self._log(
                             "⚠ 재테스트 실패 — AUTO_DEV_CONTINUE_ON_FAILURE=true 이므로 다음 태스크로 진행"
                         )
