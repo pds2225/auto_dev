@@ -1,4 +1,6 @@
+import json
 import os
+import subprocess
 import sys
 import tempfile
 import textwrap
@@ -620,3 +622,69 @@ def test_api_missing_input_file(_client, tmp_path):
     data = res.get_json()
     assert data["ok"] is False
     assert "error" in data
+
+# ── 품질 필터 ─────────────────────────────────────────────────────────────────
+
+def test_validate_changed_files_no_git_repo():
+    """git 저장소가 아니면 검증을 건너뛴다."""
+    with tempfile.TemporaryDirectory() as tmp:
+        r = LoopRunner()
+        r.project_dir = tmp
+        valid, issues = r._validate_changed_files()
+        assert valid is True
+        assert issues == []
+
+
+def test_validate_changed_files_py_syntax_error_rollback():
+    """Python 문법 오류 파일을 git checkout으로 롤백한다."""
+    with tempfile.TemporaryDirectory() as tmp:
+        subprocess.run(["git", "init"], cwd=tmp, capture_output=True, check=True)
+        subprocess.run(["git", "config", "user.email", "test@test.com"], cwd=tmp, capture_output=True)
+        subprocess.run(["git", "config", "user.name", "Test"], cwd=tmp, capture_output=True)
+
+        app_py = Path(tmp) / "app.py"
+        app_py.write_text("print('ok')", encoding="utf-8")
+        subprocess.run(["git", "add", "."], cwd=tmp, capture_output=True)
+        subprocess.run(["git", "commit", "-m", "init"], cwd=tmp, capture_output=True)
+
+        app_py.write_text("improt os\n", encoding="utf-8")
+
+        r = LoopRunner()
+        r.project_dir = tmp
+        valid, issues = r._validate_changed_files()
+        assert valid is False
+        assert len(issues) == 1
+        assert issues[0]["file"] == "app.py"
+        # 롤백 확인
+        assert app_py.read_text(encoding="utf-8") == "print('ok')"
+
+
+def test_validate_changed_files_consecutive_quality_warning():
+    """연속 3회 품질 불량이면 'AI 모델 교체 권고' 경고 로그를 남긴다."""
+    with tempfile.TemporaryDirectory() as tmp:
+        subprocess.run(["git", "init"], cwd=tmp, capture_output=True, check=True)
+        subprocess.run(["git", "config", "user.email", "test@test.com"], cwd=tmp, capture_output=True)
+        subprocess.run(["git", "config", "user.name", "Test"], cwd=tmp, capture_output=True)
+
+        app_py = Path(tmp) / "app.py"
+        app_py.write_text("print('ok')", encoding="utf-8")
+        subprocess.run(["git", "add", "."], cwd=tmp, capture_output=True)
+        subprocess.run(["git", "commit", "-m", "init"], cwd=tmp, capture_output=True)
+
+        # 기존 품질 로그에 2개의 이슈를 미리 기록
+        quality_log = Path(tmp) / "quality_log.json"
+        quality_log.write_text(json.dumps({
+            "issues": [
+                {"task_id": "T1", "file": "a.py", "error": "e1", "timestamp": "2026-01-01T00:00:00", "project_dir": tmp},
+                {"task_id": "T2", "file": "b.py", "error": "e2", "timestamp": "2026-01-01T00:00:00", "project_dir": tmp},
+            ]
+        }), encoding="utf-8")
+
+        app_py.write_text("improt os\n", encoding="utf-8")
+
+        r = LoopRunner()
+        r.project_dir = tmp
+        r._validate_changed_files()
+
+        logs = list(r.log_queue.queue)
+        assert any("AI 모델 교체 권고" in line for line in logs), "연속 3회 경고 로그가 없다"
