@@ -181,7 +181,9 @@ Get-Content D:\auto_dev\dashboard\schedule.json | ConvertFrom-Json
 > **사용법**: PENDING 섹션에 `- TASK-XXX: 작업 설명` 형식으로 추가
 
 ## PENDING
-
+- TASK-28: AI 응답 품질 필터 구현 — Codex가 수정한 파일을 자동 문법 체크하고 오류 시 롤백
+- TASK-31: 루프 스케줄 실행 구현 — 대시보드에서 시간/요일 설정 시 자동으로 루프 시작
+- TASK-26: 루프 실행 이력 통계 대시보드 — runner.log 파싱하여 대시보드에 완료/평균시간/실패율 표시
 
 ## RUNNING
 
