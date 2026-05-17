@@ -47,6 +47,8 @@
 
 > **yml 파일이 뭔가요?** → GitHub에게 "이런 순서로 일해"라고 적어놓은 설명서입니다. 세탁기의 '표준 코스' 버튼처럼, 누륾면 정해진 순서로 자동 실행됩니다. **직접 열어볼 필요 없어요.**
 
+**핸드폰에서도 실행 가능합니다.**
+
 **1. 아래 링크 중 하나 클릭**
 
 | 기능 | 설명 | 바로가기 링크 |
@@ -54,10 +56,10 @@
 | **Auto Dev Loop** | 개발 목표 1개를 입력하면 AI가 코드 짜고 PR 생성 | [클릭해서 이동](https://github.com/pds2225/auto_dev/actions/workflows/auto-dev-loop.yml) |
 | **Auto Dev Queue** | TASKS.md의 할 일 목록을 순서대로 자동 처리 | [클릭해서 이동](https://github.com/pds2225/auto_dev/actions/workflows/auto-dev-queue.yml) |
 
-**2. 실행하기**
+**2. 실행하기 (PC나 핸드폰 브라우저)**
 - 링크를 클릭하면 웹페이지가 열립니다
-- 화면 중앙의 **Run workflow** 버튼 클릭
-- 개발 목적을 입력 (예: "로그인 버튼 디자인 개선")
+- 오른쪽 위의 **Run workflow** 버튼 클릭 (핸드폰에서는 ⋮ 메뉴 안에 있음)
+- 개발 목표를 입력 (예: "로그인 버튼 디자인 개선")
 - **Run workflow** 버튼을 다시 클릭하면 실행 시작
 
 **3. 결과 확인**
@@ -143,14 +145,41 @@ python ai_project_scaffold_generator.py
 
 ---
 
-### 대시보드 보기 (화면으로 보고 싶을 때)
+### 방법 5 — 대시보드에서 실행하고 모니터링하기
+
+**대시보드란?** → 할 일 목록과 실행 버튼을 **화면**으로 보여주는 창입니다.
+
+**1. 대시보드 실행**
+```powershell
+cd D:\auto_dev
+python -m streamlit run dashboard\streamlit_app.py
+```
+→ 브라우저가 열리면 `http://localhost:8501`에서 확인
+
+**2. 대시보드에서 할 수 있는 것**
+| 기능 | 설명 |
+|---|---|
+| 🎯 GitHub Actions 실행 | 목표를 입력하고 버튼 클릭 → GitHub에서 AI가 개발 시작 |
+| ⏰ 예약 설정 | 원하는 시간/요일을 설정하면 **자동으로 루프 시작** |
+| 📊 통계 카드 | "완료 N개 / 평균 N분 / 실패 N개"를 한눈에 확인 |
+| 📋 할 일 현황 | PENDING/RUNNING/DONE 개수 확인 |
+
+**3. 핸드폰에서 대시보드 접속 (외부에서 보기)**
+
+집 PC를 켜두고 핸드폰에서 대시보드를 보고 싶을 때:
 
 ```powershell
-cd D:\auto_dev\dashboard
-streamlit run streamlit_app.py
+# 1. 대시보드 실행 (첫 번째 터미널)
+cd D:\auto_dev
+python -m streamlit run dashboard\streamlit_app.py
+
+# 2. ngrok 터널링 (두 번째 터미널)
+python -m ngrok http 8501
+# → https://abcd1234.ngrok.io 같은 주소가 나옴
+# → 이 주소를 핸드폰 브라우저에서 접속
 ```
 
-웹브라우저가 열리면 현재 할 일 목록, 작업 진행 상태, 로그 기록을 **그래픽 화면**으로 볼 수 있습니다.
+> ngrok 주소는 실행할 때마다 바뀝니다. 고정 주소를 원하면 ngrok 무료 가입 후 토큰 등록이 필요합니다.
 
 ---
 
@@ -176,17 +205,6 @@ GitHub 웹사이트에서 설정합니다:
 | API 키를 코드에 적지 않기 | 유출 위험이 있습니다 |
 | 같은 실패를 3번 이상 반복하지 않기 | 무한 루프를 방지하기 위함입니다 |
 | 자동 merge 금지 | PR은 사람이 직접 검토 후 merge 합니다 |
-
----
-
-## 프롬프트 생성 (auto_dev_prompt_loop)
-
-```bash
-python scripts/auto_dev_prompt_loop.py            # 첫 번째 미처리 할 일(PENDING) → auto_prompt_YYYYMMDD_HHMMSS.md 생성
-python scripts/auto_dev_prompt_loop.py --copy     # 생성 후 Windows 클립보드에 복사
-python scripts/auto_dev_prompt_loop.py --task-id TASK-003  # 특정 할 일 지정
-python scripts/auto_dev_prompt_loop.py --repo D:\other_repo  # 다른 저장소 대상
-```
 
 ---
 
