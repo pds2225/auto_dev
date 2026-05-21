@@ -29,8 +29,6 @@ TASKS.md
 
 ## Active
 
-- [ ] [AUTO] 대시보드 상단 안내문을 더 짧고 명확하게 수정해줘.
-기능은 변경하지 말고 문구만 수정해. (2026-05-09)
 - [x] [TASK-35] 주요 오류 유형 확인 및 분류
 - [x] [TASK-36] 오류 수정 및 코드 개선
 - [x] [TASK-37] 최종 통합 테스트 수행
@@ -78,6 +76,7 @@ TASKS.md
 
 ## Done
 
+- [x] [AUTO] 대시보드 상단 안내문을 더 짧고 명확하게 수정해줘. 기능은 변경하지 말고 문구만 수정해. (2026-05-09)
 - [x] 루프 엔진 기본 동작 (TASK-32까지 omni-sync 프로젝트 완료, 42 tests passed)
 - [x] [TASK-01] scaffold_generator의 render_tasks()와 loop_runner의 TASKS.md 형식 불일치 수정
 - [x] [TASK-02] loop_runner._install_deps()의 'omni-sync' 하드코딩 제거 및 범용 서브디렉토리 탐색으로 교체
