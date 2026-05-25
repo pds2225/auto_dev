@@ -183,7 +183,6 @@ Get-Content D:\auto_dev\dashboard\schedule.json | ConvertFrom-Json
 ## PENDING
 
 
-- TASK-VUP-004: [WORK-20260521-004][valueup-ai-hub][OPENCLAW] valueup-ai-hub와 auto_dev 연결: Hermes/OpenClaw 업무 관제에서 자동개발 실행 흐름 완성
 ## RUNNING
 
 ## DONE
