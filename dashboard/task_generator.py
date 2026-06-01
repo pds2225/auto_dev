@@ -32,6 +32,27 @@ from ai_project_scaffold_generator import (
 AUTO_DEV_DIR = Path(__file__).parent.parent
 
 
+def _parse_json_response(raw: str) -> dict:
+    """AI 응답에서 JSON을 추출합니다 (코드 블록, 설명 텍스트 처리 포함)."""
+    if not raw or not raw.strip():
+        raise ValueError("AI 응답이 비어 있음")
+
+    cleaned = raw.strip()
+
+    # 코드 블록 안의 JSON 추출
+    m = re.search(r"```(?:json)?\s*([\s\S]+?)\s*```", cleaned)
+    if m:
+        cleaned = m.group(1).strip()
+    else:
+        # 코드 블록이 없으면 { ... } 부분만 추출 (설명 텍스트 무시)
+        start = cleaned.find("{")
+        end = cleaned.rfind("}")
+        if start != -1 and end != -1 and end > start:
+            cleaned = cleaned[start:end + 1].strip()
+
+    return json.loads(cleaned)
+
+
 def _build_task_from_description(
     description: str,
     task_id: str = "",
@@ -180,7 +201,7 @@ def decompose_tasks_with_ai(description: str, tech_stack: str = "Streamlit") -> 
                 ],
             )
             raw = resp.choices[0].message.content
-            data = json.loads(raw)
+            data = _parse_json_response(raw)
             tasks = data.get("tasks", [])
             if tasks:
                 return tasks
@@ -199,7 +220,7 @@ def decompose_tasks_with_ai(description: str, tech_stack: str = "Streamlit") -> 
                 messages=[{"role": "user", "content": prompt}],
             )
             raw = msg.content[0].text
-            data = json.loads(raw)
+            data = _parse_json_response(raw)
             tasks = data.get("tasks", [])
             if tasks:
                 return tasks

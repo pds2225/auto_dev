@@ -171,26 +171,37 @@ When in doubt, use patch mode.
 
 
 def _parse_json_response(raw: str) -> dict:
-    """AI 응답에서 JSON을 추출합니다 (코드 블록 처리 포함).
+    """AI 응답에서 JSON을 추출합니다 (코드 블록, 설명 텍스트 처리 포함).
 
     잘린 출력, 미닫힌 따옴표, 잘못된 JSON을 각각 구분해서 오류를 냅니다.
     """
-    raw = raw.strip()
+    if not raw or not raw.strip():
+        raise ValueError("AI 응답이 비어 있음")
+
+    cleaned = raw.strip()
+
     # 코드 블록 안의 JSON 추출
-    m = re.search(r"```(?:json)?\s*([\s\S]+?)\s*```", raw)
+    m = re.search(r"```(?:json)?\s*([\s\S]+?)\s*```", cleaned)
     if m:
-        raw = m.group(1).strip()
+        cleaned = m.group(1).strip()
+    else:
+        # 코드 블록이 없으면 { ... } 부분만 추출 (설명 텍스트 무시)
+        start = cleaned.find("{")
+        end = cleaned.rfind("}")
+        if start != -1 and end != -1 and end > start:
+            cleaned = cleaned[start:end + 1].strip()
+
     try:
-        return json.loads(raw)
+        return json.loads(cleaned)
     except json.JSONDecodeError as exc:
         # 오류 원인 분류
-        if raw.endswith('"') or raw.endswith("'"):
+        if cleaned.endswith('"') or cleaned.endswith("'"):
             raise ValueError(
                 "AI 응답이 미닫힌 문자열로 끝남 (max_tokens 초과로 잘린 출력 가능성)"
             ) from exc
-        if len(raw) > 3900:
+        if len(cleaned) > 3900:
             raise ValueError(
-                f"AI 응답이 최대 토큰에서 잘린 것으로 추정됨 ({len(raw)} chars)"
+                f"AI 응답이 최대 토큰에서 잘린 것으로 추정됨 ({len(cleaned)} chars)"
             ) from exc
         raise ValueError(f"잘못된 JSON 형식: {exc}") from exc
 
@@ -215,8 +226,8 @@ def call_openai(goal: str, context: str) -> dict:
     )
     raw = response.choices[0].message.content
     try:
-        return json.loads(raw)
-    except json.JSONDecodeError as exc:
+        return _parse_json_response(raw)
+    except ValueError as exc:
         raise ValueError(
             f"OpenAI 응답 JSON 파싱 실패: {exc}\n응답 미리보기: {raw[:200]}"
         ) from exc
