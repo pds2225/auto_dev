@@ -96,6 +96,7 @@ class LoopRunner:
         self.log_queue: Queue = Queue()
         self._thread: threading.Thread | None = None
         self._stop_event = threading.Event()
+        self.current_task_start: datetime | None = None
 
     def start(self, project_dir: str):
         normalized_project_dir = str(Path(project_dir))
@@ -513,6 +514,95 @@ class LoopRunner:
         if returncode == 126 or self._PERM_RE.search(output):
             return "perm"
         return "other"
+
+    def _validate_changed_files(self) -> tuple[bool, list[dict]]:
+        """AI가 수정한 파일을 문법 검사하고 오류가 있으면 git checkout으로 롤백합니다."""
+        project = Path(self.project_dir)
+        git_dir = project / ".git"
+        if not git_dir.exists():
+            return True, []
+
+        try:
+            result = subprocess.run(
+                ["git", "diff", "--name-only"],
+                cwd=str(project),
+                capture_output=True, text=True, encoding="utf-8", timeout=30,
+            )
+            if result.returncode != 0:
+                return True, []
+        except Exception:
+            return True, []
+
+        changed_files = [f.strip() for f in result.stdout.splitlines() if f.strip()]
+        if not changed_files:
+            return True, []
+
+        errors: list[dict] = []
+        for rel_path in changed_files:
+            file_path = project / rel_path
+            if not file_path.exists():
+                continue
+
+            if file_path.suffix == ".py":
+                try:
+                    check = subprocess.run(
+                        [sys.executable, "-m", "py_compile", str(file_path)],
+                        capture_output=True, text=True, timeout=10,
+                    )
+                    if check.returncode != 0:
+                        error_msg = check.stderr.strip()[:200]
+                        errors.append({"file": rel_path, "error": error_msg})
+                        subprocess.run(
+                            ["git", "checkout", "--", rel_path],
+                            cwd=str(project), capture_output=True, timeout=10,
+                        )
+                        self._log(f"⚠ 품질 필터: {rel_path} 문법 오류 → 롤백 ({error_msg})")
+                except Exception:
+                    pass
+
+        if errors:
+            self._record_quality_issues(errors)
+
+        return len(errors) == 0, errors
+
+    def _record_quality_issues(self, errors: list[dict]) -> None:
+        """quality_log.json에 품질 이슈를 기록하고 연속 3회 불량을 감지합니다."""
+        project = Path(self.project_dir)
+        log_file = project / "quality_log.json"
+
+        try:
+            if log_file.exists():
+                log_data = json.loads(log_file.read_text(encoding="utf-8"))
+            else:
+                log_data = {"issues": []}
+        except Exception:
+            log_data = {"issues": []}
+
+        now = datetime.now().isoformat()
+        for err in errors:
+            log_data["issues"].append({
+                "task_id": self.current_task_id or "-",
+                "file": err["file"],
+                "error": err["error"],
+                "timestamp": now,
+                "project_dir": str(project),
+            })
+
+        recent = [
+            i for i in log_data["issues"][-20:]
+            if i.get("project_dir") == str(project) and i.get("error")
+        ]
+        consecutive = 0
+        for _ in reversed(recent):
+            consecutive += 1
+            if consecutive >= 3:
+                self._log("🚨 AI 모델 교체 권고: 연속 3회 품질 불량 감지")
+                break
+
+        try:
+            log_file.write_text(json.dumps(log_data, ensure_ascii=False, indent=2), encoding="utf-8")
+        except Exception as e:
+            self._log(f"⚠ quality_log.json 저장 실패: {e}")
 
     def _run_codex(
         self, prompt: str, extra_context: str = "", *, bypass_sandbox: bool = False
@@ -1035,6 +1125,8 @@ class LoopRunner:
                     f"reason={self.selection_reason} "
                     f"section={self.selected_from_section}"
                 )
+                self.current_task_start = datetime.now()
+                self._log(f"[START] task={display_task} ts={self.current_task_start.isoformat()}")
                 self._log(f"\n📌 태스크: {display_task}")
 
                 # ── 0단계: 하드닝 전 기준 테스트 ───────────────────────────
@@ -1063,6 +1155,11 @@ class LoopRunner:
                 if self._stop_event.is_set():
                     break
 
+                if harden_code == 0 and not harden_timed_out:
+                    valid, issues = self._validate_changed_files()
+                    if not valid:
+                        self._log(f"⚠ 품질 필터: {len(issues)}개 파일 문법 오류 → 롤백 완료")
+
                 # ── 2단계: 테스트 ───────────────────────────────────────────
                 self.current_stage = "testing"
                 self._log("🧪 [2/3] 테스트 실행 중...")
@@ -1073,6 +1170,8 @@ class LoopRunner:
                 self._log(f"  📊 하드닝 효과: [{pre_summary}] → [{post_summary}]")
 
                 if passed:
+                    duration = (datetime.now() - self.current_task_start).total_seconds() if self.current_task_start else 0.0
+                    self._log(f"[DONE] task={task} duration_sec={duration:.1f} status=passed")
                     self._log("✅ 테스트 통과!")
                     self._mark_task_done(task)
                     self._log(f"  → [{task}] 완료 처리")
@@ -1099,6 +1198,11 @@ class LoopRunner:
                 if self._stop_event.is_set():
                     break
 
+                if debug_code == 0 and not debug_timed_out:
+                    valid, issues = self._validate_changed_files()
+                    if not valid:
+                        self._log(f"⚠ 품질 필터: {len(issues)}개 파일 문법 오류 → 롤백 완료")
+
                 # ── 4단계: 재테스트 ─────────────────────────────────────────
                 self.current_stage = "testing"
                 self._log("🧪 재테스트 실행 중...")
@@ -1107,11 +1211,15 @@ class LoopRunner:
                     self._log(f"  {line}")
 
                 if passed:
+                    duration = (datetime.now() - self.current_task_start).total_seconds() if self.current_task_start else 0.0
+                    self._log(f"[DONE] task={task} duration_sec={duration:.1f} status=passed")
                     self._log("✅ 재테스트 통과!")
                     self._mark_task_done(task)
                     self._log(f"  → [{task}] 완료 처리")
                 else:
                     if CONTINUE_ON_TEST_FAILURE:
+                        duration = (datetime.now() - self.current_task_start).total_seconds() if self.current_task_start else 0.0
+                        self._log(f"[DONE] task={task} duration_sec={duration:.1f} status=failed")
                         self._log(
                             "⚠ 재테스트 실패 — AUTO_DEV_CONTINUE_ON_FAILURE=true 이므로 다음 태스크로 진행"
                         )

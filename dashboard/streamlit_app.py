@@ -186,6 +186,14 @@ def _trigger_workflow(token: str, owner: str, repo: str, goal: str, mode: str) -
         return False, f"네트워크 오류: {exc}"
 
 
+def _scheduled_trigger(project_dir: str, schedule: dict) -> None:
+    """예약된 시간에 로컬 루프를 시작합니다."""
+    try:
+        runner.start(project_dir)
+    except Exception as e:
+        print(f"예약 실행 실패: {e}")
+
+
 def _get_recent_runs(token: str, owner: str, repo: str, limit: int = 5) -> list[dict]:
     """최근 GitHub Actions 실행 목록을 가져옵니다."""
     url = (
@@ -392,10 +400,26 @@ if "trigger_ok" not in st.session_state:
     st.session_state.trigger_ok = None
 if "local_logs" not in st.session_state:
     st.session_state.local_logs = []
+if "scheduler_started" not in st.session_state:
+    from task_scheduler import TaskScheduler
+    _scheduler = TaskScheduler(trigger_callback=_scheduled_trigger)
+    _scheduler.load_schedules()
+    _scheduler.start_monitoring()
+    st.session_state.scheduler_started = True
 
 # ── 메인 UI ──────────────────────────────────────────────────────────────────
 st.title("🤖 Auto Dev")
 st.caption("GitHub Actions 자동개발 대시보드")
+
+# 통계 카드
+try:
+    from log_analyzer import analyze_runner_log, get_weekly_summary
+    log_path = Path(__file__).parent / "runner.log"
+    stats = analyze_runner_log(log_path)
+    if stats["total_tasks"] > 0:
+        st.info(f"📊 {get_weekly_summary(stats)}")
+except Exception:
+    pass
 
 st.divider()
 
@@ -634,6 +658,45 @@ if push_clicked or pr_clicked:
                                     st.success(f"✅ PR 생성 완료: {msg_api}")
                                 else:
                                     st.error(f"PR 생성 실패: {msg_api}")
+
+st.divider()
+
+# ── 예약 설정 ────────────────────────────────────────────────────────────────
+st.subheader("⏰ 예약 설정")
+st.caption("지정한 시간과 요일에 자동으로 로컬 루프를 시작합니다.")
+
+with st.expander("예약 설정 편집", expanded=False):
+    from task_scheduler import TaskScheduler
+    scheduler = TaskScheduler()
+    scheduler.load_schedules()
+
+    st.caption(f"등록된 예약: {len(scheduler.schedules)}개")
+    for idx, sched in enumerate(scheduler.schedules):
+        c1, c2 = st.columns([4, 1])
+        with c1:
+            enabled = "✅" if sched.get("enabled") else "⛔"
+            st.text(f"{enabled} {sched['time']} / {', '.join(sched['days'])} / {sched['project_dir']}")
+        with c2:
+            if st.button("삭제", key=f"del_sched_{idx}"):
+                scheduler.remove_schedule(idx)
+                st.rerun()
+
+    st.divider()
+    new_time = st.time_input("실행 시간", value=datetime.strptime("22:00", "%H:%M").time(), key="sched_time")
+    new_days = st.multiselect("요일", ["월", "화", "수", "목", "금", "토", "일"], default=["월", "화", "수", "목", "금"], key="sched_days")
+    new_project = st.text_input("프로젝트 경로", placeholder=r"예: D:\my-project", key="sched_proj")
+    new_enabled = st.toggle("활성화", value=True, key="sched_enabled")
+
+    if st.button("예약 추가", key="add_sched"):
+        if not new_project:
+            st.error("프로젝트 경로를 입력하세요.")
+        elif not Path(new_project).is_dir():
+            st.error(f"유효하지 않은 경로입니다: {new_project}")
+        else:
+            time_str = new_time.strftime("%H:%M")
+            scheduler.add_schedule(time_str, new_days, new_project, new_enabled)
+            st.success(f"예약 추가 완료: {time_str}")
+            st.rerun()
 
 st.divider()
 

@@ -10,6 +10,8 @@ from pathlib import Path
 
 # .env 파일에서 환경변수 로드 (있을 경우)
 try:
+    from dotenv import load_dotenv as _load_shared
+    _load_shared(r"D:\.env.shared")
     from dotenv import load_dotenv
     load_dotenv(Path(__file__).parent / ".env")
 except ImportError:
