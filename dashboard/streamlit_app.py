@@ -441,12 +441,8 @@ with st.expander("⚙️ 설정", expanded=not bool(_get_secret("GITHUB_TOKEN"))
 
 # ── 로컬 자동개발 루프 ────────────────────────────────────────────────────────
 st.subheader("🖥️ 로컬 자동개발 루프")
-st.caption("이 PC에서 TASKS.md의 할 일 목록을 읽고 직접 코드 개발을 진행합니다.")
-st.warning(
-    "Flask 서버(server.py)와 동시에 실행하면 러너/파일 충돌 위험이 있습니다. "
-    "둘 중 하나만 켜두세요.",
-    icon="⚠️",
-)
+st.caption("TASKS.md의 할 일을 이 PC에서 직접 실행합니다.")
+st.warning("server.py와 동시 실행 시 충돌 위험. 하나만 사용하세요.", icon="⚠️")
 
 local_project_dir = st.text_input(
     "프로젝트 경로",
