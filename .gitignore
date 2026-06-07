@@ -16,3 +16,5 @@ auto_prompt_*.md
 actions_log.txt
 .streamlit/
 .claude/settings.local.json
+.omc/
+.bkit/
