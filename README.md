@@ -286,7 +286,7 @@ python dashboard\server.py
 **관련 검증 명령**
 
 ```bash
-python -m pytest tests/test_task_scheduler.py tests/test_log_analyzer.py tests/test_loop_runner.py -v
+python -m pytest tests/test_task_scheduler.py tests/test_log_analyzer.py -v
 python dashboard/loop_runner.py --self-test
 ```
 
