@@ -216,3 +216,67 @@ python scripts/auto_dev_prompt_loop.py --copy     # 생성 후 Windows 클립보
 python scripts/auto_dev_prompt_loop.py --task-id TASK-003  # 특정 할 일 지정
 python scripts/auto_dev_prompt_loop.py --repo D:\other_repo  # 다른 저장소 대상
 ```
+
+---
+
+## 🆕 자동개발 하네스 (통합) — 한 줄로 "하다 만 작업" 자동 완료
+
+> 2026-06-14 합의. 트리거 한마디로 여러 repo의 **미완성 작업을 승인 없이 완료**한다. 위 방법 1~5를 흡수·통합하는 상위 하네스.
+
+### 트리거
+`자동개발`, `목표:`, `자동 개발`, `auto-dev`
+
+### 실행 (레포 이동 불필요 — 어느 폴더에서나)
+
+| 입력 | 동작 |
+|---|---|
+| `자동개발` | 지금 폴더 1개 |
+| `자동개발 전부` | 등록된 모든 repo **병렬** |
+| `자동개발 mail,v_up` | 지정한 것만 |
+| `자동개발 목표: <내용>` | 목표 직접 지정 |
+
+### 두 가지 모드
+- **세션 즉시 모드**: 지금 클로드 창에서 subagent 병렬 자율개발 (대화형)
+- **야간 무인 모드**: Windows 작업스케줄러 + headless `claude -p` 루프 (사람 없이 밤에)
+
+### Q1. 범위 산정 — "미완성 = 완료 대상" 탐지 소스 (확정)
+
+목표를 직접 안 적어도, 각 repo에서 아래 **3가지를 자동 수집**해 할 일 큐를 만든다:
+
+1. **RESUME.md의 "진행 중 / 다음 액션"** 미완료 항목 — 최우선
+2. **열린 PR(미병합)** — 끝내고 안 합친 것
+3. **실패하는 테스트** — 깨졌거나 미완성
+
+- 우선순위: **실패 테스트 > 열린 PR > RESUME 다음 액션**
+- **큐가 빌 때까지** 각 항목을 `구현 → 테스트 통과 → 커밋 → PR → 검증 통과 시 병합`으로 완료
+- 막히면 그 항목만 `BLOCKED` 표시하고 다음으로 (멈추지 않음)
+- ⚠️ 저장 안 한 변경(dirty)·stash·GOALS/TASKS·TODO 주석은 **이번 범위에서 제외**(참고만, 함부로 건드리지 않음)
+
+### Q2. 대상 repo (등록)
+
+| repo | 용도 |
+|---|---|
+| `D:\mail` | 정부지원사업 공고 수집 |
+| `D:\v_up` | STT 통화/회의 요약 |
+| `D:\auto_write` | 문서 품질 개선/사업계획서 |
+| `D:\_worklog` | work-cockpit 업무 관제 |
+| `D:\DIG` | (용도 미확인) |
+| `D:\walk` | (용도 미확인) |
+| `D:\auto_shopper` | 쇼핑 대행 |
+| `D:\marketgate` | (용도 미확인) |
+| `D:\client` | (용도 미확인) |
+| `D:\auto_addcalender` | 캘린더 자동 등록 |
+
+### 권한·안전 (무인 실행 가드)
+
+| 허용 | 차단 |
+|---|---|
+| Read/Edit/Write/Glob/Grep, 제한된 Bash | **파일 삭제** (rm·del·Remove-Item) |
+| 파일 **이동·이름변경** (move·git mv) | `git reset --hard`·force push |
+| git add/commit/branch/**push/PR/병합** (로컬↔GitHub sync) | **main 직접 push** (작업브랜치→PR만) |
+| `gh`·`git` 네트워크 | 임의 네트워크(curl·wget), Secret 출력·커밋 |
+
+- 멈춤 조건: **검증 실패 · Secret 포함 · 되돌리기 어려운 파괴적 변경 · repo 금지사항 위반** → 자동 진행 중단·보고
+- Secret 자동 마스킹, 실제 메일 발송 등 외부 부작용은 repo 규칙대로 dry-run
+
+> ⚠️ **정책 차이**: 이 통합 하네스는 "검증 통과 시 자동 병합"을 허용합니다(위 방법 1~5의 "자동 merge 금지"와 다름 — **안전가드를 모두 충족할 때만** 병합).

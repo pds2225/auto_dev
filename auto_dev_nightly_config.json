@@ -1,0 +1,21 @@
+{
+  "claude_bin": "C:\\Users\\ekth3\\.local\\bin\\claude",
+  "timeout_seconds": 2400,
+  "max_retry": 2,
+  "ntfy_topic": "worklog-ekth3-x5s1n0",
+  "allowed_tools": "Read,Edit,Write,Glob,Grep,Bash,TodoWrite",
+  "disallowed_tools": "Bash(rm:*),Bash(del:*),Bash(rmdir:*),Bash(git reset --hard:*),Bash(git push --force:*),Bash(git push -f:*),Bash(git push * main:*),Bash(git push origin main:*)",
+  "_tier_설명": "merge=구현→PR→병합까지 무인 / pr=PR까지만(병합은 사람) / dry=점검만(보호). 미지정 시 dry.",
+  "repos": [
+    {"path": "D:\\mail",            "protected": true,  "tier": "dry",   "note": ".env/monitor.py/streamlit 보호, 실제 메일발송 금지, 동시세션 잦음"},
+    {"path": "D:\\v_up",            "protected": false, "tier": "pr",    "note": "STT 통화/회의 — 중요, PR까지만"},
+    {"path": "D:\\auto_write",      "protected": false, "tier": "pr",    "note": "문서 품질/사업계획서 — 중요, PR까지만"},
+    {"path": "D:\\_worklog",        "protected": false, "tier": "pr",    "note": "work-cockpit 데이터 — 덮어쓰기 위험, PR까지만"},
+    {"path": "D:\\DIG",             "protected": false, "tier": "merge", "note": "자동병합 OK"},
+    {"path": "D:\\walk",            "protected": false, "tier": "merge", "note": "자동병합 OK"},
+    {"path": "D:\\auto_shopper",    "protected": false, "tier": "merge", "note": "쇼핑 대행 — 자동병합 OK"},
+    {"path": "D:\\marketgate",      "protected": false, "tier": "pr",    "note": "PR까지만"},
+    {"path": "D:\\client",          "protected": false, "tier": "merge", "note": "자동병합 OK"},
+    {"path": "D:\\auto_addcalender","protected": false, "tier": "merge", "note": "캘린더 자동등록 — 자동병합 OK"}
+  ]
+}
