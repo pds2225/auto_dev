@@ -114,3 +114,32 @@ Secret 하드코딩 금지:
 grep -rn "sk-" scripts/
 grep -rn "ghp_" scripts/
 ```
+
+---
+
+## Cursor Cloud specific instructions
+
+### Services
+
+| Service | Command | Port | Notes |
+|---|---|---|---|
+| Flask API server | `cd dashboard && python3 server.py` | 5000 | REST API + HTML dashboard |
+| Streamlit dashboard | `python3 -m streamlit run dashboard/streamlit_app.py --server.port 8501 --server.headless true` | 8501 | Primary web UI |
+
+Do **not** run both simultaneously — they share the `loop_runner` singleton and will conflict.
+
+### Running tests
+
+```bash
+python3 -m pytest tests/ -q --override-ini="cache_dir=/tmp/pytest-cache"
+```
+
+The `pytest.ini` sets a Windows-specific `cache_dir`. Override it on Linux as shown above.  
+6 tests in `test_loop_runner.py` and `test_project_snapshot.py` fail on Linux due to hardcoded Windows temp paths in `conftest.py` — this is a pre-existing issue, not caused by environment setup.
+
+### Key caveats
+
+- The project was originally developed on Windows. Some test fixtures use raw Windows paths (`C:\Users\...`). These tests are expected to fail on Linux.
+- `python-dotenv` is used; if you create a `.env` file it will be loaded automatically by scripts that call `load_dotenv()`.
+- No external databases or Docker services are required — all state is file-based (JSON, Markdown).
+- The `codex` and `claude` CLI tools are optional external dependencies; the loop runner gracefully falls back if they are not installed.
