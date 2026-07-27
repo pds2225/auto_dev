@@ -145,7 +145,7 @@ python ai_project_scaffold_generator.py
 
 ---
 
-### 방법 5 — 대시보드에서 실행하고 모니터링하기
+### 방법 6 — 대시보드에서 실행하고 모니터링하기
 
 **대시보드란?** → 할 일 목록과 실행 버튼을 **화면**으로 보여주는 창입니다.
 
@@ -180,6 +180,115 @@ python -m ngrok http 8501
 ```
 
 > ngrok 주소는 실행할 때마다 바뀝니다. 고정 주소를 원하면 ngrok 무료 가입 후 토큰 등록이 필요합니다.
+
+---
+
+### 대시보드 개발자 운영 메모
+
+최근 대시보드는 단순 실행 버튼을 넘어 로컬 루프 실행, 예약 실행, 큐 전환, 로그 통계를 함께 다룹니다. 운영 중 문제가 생기면 아래 파일과 상태값을 먼저 확인하세요.
+
+| 영역 | 주요 파일 | 역할 |
+|---|---|---|
+| Streamlit UI | `dashboard/streamlit_app.py` | 로컬 루프 시작/중지, 예약 편집, GitHub Actions 트리거, 최근 로그 표시 |
+| Flask API | `dashboard/server.py` | `/api/loop/*`, `/api/queue`, `/api/tasks`, `/api/prompt-generate`, `/api/snapshot` 제공 |
+| 실행 루프 | `dashboard/loop_runner.py` | TASK 선택, Codex 실행, 테스트/디버그/재테스트, 완료 처리 |
+| 예약 | `dashboard/task_scheduler.py` | `schedule.json`을 읽어 지정 시간에 `LoopRunner` 시작 |
+| 통계 | `dashboard/log_analyzer.py` | `runner.log`의 완료/실패/평균 소요시간 계산 |
+| Git 상태 | `dashboard/project_snapshot.py` | 브랜치, HEAD, origin, dirty 상태 조회 |
+
+**실행 방식**
+
+```powershell
+# Streamlit 대시보드
+python -m streamlit run dashboard\streamlit_app.py
+
+# Flask API 대시보드
+python dashboard\server.py
+```
+
+- `streamlit_app.py`와 `server.py`는 같은 전역 `runner`와 `loop_state.json`을 공유하므로 동시에 실행하지 마세요.
+- GitHub Actions 실행 저장소 기본값은 `pds2225/auto_dev`입니다. 작업 대상 저장소 경로와 혼동하지 마세요.
+- GitHub Actions 트리거/최근 실행/PR 조회에는 `GITHUB_TOKEN`이 필요합니다. Streamlit Secrets 또는 환경변수로만 넣고 파일에 저장하지 않습니다.
+
+**런타임 파일**
+
+| 파일 | 생성 위치 | 내용 | 커밋 여부 |
+|---|---|---|---|
+| `dashboard/loop_state.json` | 대시보드 실행 중 | 현재 실행 여부, 단계, 태스크, 프로젝트 경로 | 커밋하지 않음 |
+| `dashboard/queue.json` | 프로젝트 대기 목록 사용 시 | 다음에 실행할 프로젝트 경로 배열 | 커밋하지 않음 |
+| `dashboard/schedule.json` | 예약 설정 저장 시 | 실행 시간/요일/프로젝트 경로/마지막 실행일 | 개인 PC 설정이면 커밋하지 않음 |
+| `dashboard/runner.log` | 루프 실행 중 | 루프 단계, 명령, 테스트 결과, 완료/실패 기록 | 커밋하지 않음 |
+| `<project>/quality_log.json` | 품질 필터 동작 시 | Python 문법 오류와 연속 품질 이슈 | 보통 커밋하지 않음 |
+
+**예약 설정 형식**
+
+`TaskScheduler`는 1분마다 현재 시간을 `HH:MM`으로 비교하고, 오늘 요일이 포함된 활성 예약만 실행합니다. 같은 예약은 `last_run`에 `YYYYMMDD`가 기록되어 하루에 한 번만 실행됩니다.
+
+```json
+{
+  "schedules": [
+    {
+      "time": "22:00",
+      "days": ["월", "화", "수", "목", "금"],
+      "project_dir": "D:\\my-project",
+      "enabled": true,
+      "last_run": ""
+    }
+  ]
+}
+```
+
+- `project_dir`은 대시보드를 실행하는 PC에서 실제 존재하는 폴더여야 합니다.
+- 요일 값은 `월`, `화`, `수`, `목`, `금`, `토`, `일` 중 하나입니다.
+- 예약 시간이 지났는데 실행되지 않았다면 `enabled`, `days`, `project_dir`, `last_run`을 순서대로 확인하세요.
+
+**루프 실행 흐름**
+
+1. 대상 프로젝트에서 `TASK.md`를 먼저 찾고, 없으면 `TASKS.md`를 사용합니다.
+2. `## Active`의 미완료 항목 중 가장 낮은 `TASK-숫자` 항목을 우선 선택합니다.
+3. `## Active`에 실행할 항목이 없으면 `## PENDING`의 `- TASK-001: 설명` 또는 `- [ ] [TASK-001] 설명` 형식으로 fallback합니다.
+4. 기준 테스트 → Codex 하드닝 → 테스트 → 실패 시 디버그 → 재테스트 순서로 실행합니다.
+5. 테스트가 통과하면 해당 항목을 `[x]`로 바꾸고 다음 태스크로 진행합니다.
+6. 실패해도 `AUTO_DEV_CONTINUE_ON_FAILURE=true`이면 실패 기록 후 다음 태스크로 진행합니다. 기본값은 `true`입니다.
+
+주요 환경변수:
+
+| 변수 | 기본값 | 의미 |
+|---|---:|---|
+| `CODEX_TIMEOUT` 또는 `CLAUDE_TIMEOUT` | `180` | Codex 1회 실행 제한 시간(초) |
+| `CODEX_RETRY_COUNT` | `2` | Codex 재시도 횟수 |
+| `AUTO_DEV_CONTINUE_ON_FAILURE` | `true` | 재테스트 실패 후 다음 태스크로 계속 진행할지 여부 |
+| `AUTO_DEV_BUILD_TAG` | 파일 수정시각 기반 | 로그에 남기는 빌드 식별자 |
+
+**로그와 통계**
+
+새 로그 형식은 통계 파싱을 위해 아래 두 줄을 기준으로 합니다.
+
+```text
+2026-05-17 10:00:00,000 [INFO] [START] task=TASK-01 ts=2026-05-17T10:00:00
+2026-05-17 10:00:30,000 [INFO] [DONE] task=TASK-01 duration_sec=30.0 status=passed
+```
+
+`log_analyzer.py`는 기존 한국어 로그(`📌 태스크:`, `완료 처리`, `실패 후 완료 처리`)도 함께 읽습니다. 통계 카드가 비어 있으면 `dashboard/runner.log` 존재 여부와 위 로그 형식을 확인하세요.
+
+**문제 해결 체크리스트**
+
+| 증상 | 확인할 것 |
+|---|---|
+| 대시보드가 이전 작업을 다시 시작함 | `dashboard/loop_state.json`의 `running`, `current_stage` 확인 |
+| 예약이 실행되지 않음 | `schedule.json`의 `time`, `days`, `enabled`, `project_dir`, `last_run` 확인 |
+| 두 프로젝트가 섞여 실행됨 | `queue.json`과 현재 `runner.project_dir` 확인 |
+| GitHub Actions 404 | 워크플로우 저장소가 `auto-dev-loop.yml`이 있는 저장소인지 확인 |
+| GitHub Actions 401 | `GITHUB_TOKEN` 권한과 만료 여부 확인 |
+| 테스트가 계속 실패해도 넘어감 | `AUTO_DEV_CONTINUE_ON_FAILURE` 값 확인 |
+| 통계가 0으로 표시됨 | `runner.log`에 `[DONE]` 또는 기존 `완료 처리` 로그가 있는지 확인 |
+
+**관련 검증 명령**
+
+```bash
+python -m pytest tests/test_task_scheduler.py tests/test_log_analyzer.py -v
+python dashboard/loop_runner.py --self-test
+```
 
 ---
 
